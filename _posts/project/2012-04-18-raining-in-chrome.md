@@ -24,12 +24,14 @@ g(x) &= \frac13 \sum_j^N \frac1{\frac1{3+7}}
 `
 
 注意了， 下面两个显示方式， 有点不一致。 
+
 ```latex
-`\[
+`
+\[
 \int_0^\infty \frac{x^3}{e^x-1}\,dx = \frac{\pi^4}{15}
 \notag
-\]`
-
+\]
+`
 `
 \begin{align}
 g(x) &= \frac13 \sum_j^N f_j(x) \\
@@ -40,7 +42,7 @@ g(x) &= \frac13 \sum_j^N \frac1{\frac1{3+7}}
 
 ### 高亮一段代码
 
-```python
+``` python
 @requires_authorization
 class SomeClass:
     pass
