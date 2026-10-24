@@ -160,22 +160,8 @@
 
   <section id="ai" class="reveal">
     <div class="sec-head"><span class="num">叁</span><h2>它</h2></div>
-    <div class="paper-list">
-      <a class="paper" href="papers/conjugate-compilation.html">
-        <span class="p-tag">论文解读</span>
-        <div class="p-title">Conjugate Compilation <span class="arrow">→</span></div>
-        <div class="p-meta">arXiv:2610.25012 · 编译如何影响梯度流的收敛结构</div>
-      </a>
-      <a class="paper" href="papers/logra.html">
-        <span class="p-tag">论文解读</span>
-        <div class="p-title">LoGRA <span class="arrow">→</span></div>
-        <div class="p-meta">arXiv:2610.06647 · 低秩梯度近似的训练加速思路</div>
-      </a>
-      <a class="paper" href="papers/RLSVR-2607.23802.html">
-        <span class="p-tag">论文解读</span>
-        <div class="p-title">RLSVR <span class="arrow">→</span></div>
-        <div class="p-meta">arXiv:2607.23802 · 强化学习中的方差约减</div>
-      </a>
+    <div class="paper-list" id="paper-list">
+      <noscript>请访问 papers/ 目录查看全部解读。</noscript>
     </div>
   </section>
 </main>
@@ -189,6 +175,28 @@
     es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); } });
   }, { threshold: 0.12 });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+  fetch('papers-manifest.json?ts=' + Date.now())
+    .then(r => r.json())
+    .then(data => {
+      const box = document.getElementById('paper-list');
+      const papers = (data.papers || []).slice()
+        .sort((a, b) => (b.arxiv || '') .localeCompare(a.arxiv || ''));
+      box.innerHTML = papers.map(p => {
+        const meta = p.arxiv
+          ? 'arXiv:' + p.arxiv + ' · <a style="color:inherit" href="https://arxiv.org/abs/' + p.arxiv + '" target="_blank" rel="noopener">原文</a>'
+          : '论文解读';
+        return '<a class="paper" href="' + p.file + '">'
+          + '<span class="p-tag">论文解读</span>'
+          + '<div class="p-title">' + p.title + ' <span class="arrow">→</span></div>'
+          + '<div class="p-meta">' + meta + '</div>'
+          + '</a>';
+      }).join('');
+    })
+    .catch(() => {
+      document.getElementById('paper-list').innerHTML =
+        '<div class="card" style="color:var(--ink-soft)">清单加载失败，请稍后刷新。</div>';
+    });
 </script>
 
 </body>

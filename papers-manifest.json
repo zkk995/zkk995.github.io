@@ -1,0 +1,20 @@
+{
+  "updated": "2026-10-24",
+  "papers": [
+    {
+      "file": "papers/RLSVR-2607.23802.html",
+      "title": "RLSVR 论文解读：给开放任务造一个“自验证”的奖励",
+      "arxiv": "2607.23802"
+    },
+    {
+      "file": "papers/conjugate-compilation.html",
+      "title": "Conjugate Compilation 论文解读",
+      "arxiv": "2610.25012"
+    },
+    {
+      "file": "papers/logra.html",
+      "title": "LoGRA 论文解读：低秩梯度草图如何砍掉 RL 训练近半显存",
+      "arxiv": "2610.06647"
+    }
+  ]
+}
