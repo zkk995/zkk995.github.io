@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>论文阅读器 · 科科</title>
+<style>
+  :root {
+    --paper: #faf7f2; --ink: #2d2a26; --ink-soft: #6f675e;
+    --red: #c8402e; --red-deep: #a33223; --line: rgba(45,42,38,.12);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: "PingFang SC", "Hiragino GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    line-height: 1.8; min-height: 100vh;
+  }
+  .bar {
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+    max-width: 980px; margin: 0 auto; padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .bar a { color: var(--red-deep); text-decoration: none; font-size: 14.5px; white-space: nowrap; }
+  .bar a:hover { text-decoration: underline; }
+  .bar .t { flex: 1; min-width: 0; font-size: 14.5px; color: var(--ink-soft);
+            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .frame-wrap { max-width: 980px; margin: 0 auto; }
+  iframe { display: block; width: 100%; border: 0; min-height: 70vh; }
+  .comments {
+    max-width: 760px; margin: 40px auto 64px; padding: 0 20px;
+    border-top: 1px solid var(--line); padding-top: 28px;
+  }
+  .comments h2 { font-size: 1.1em; margin: 0 0 14px; }
+  .err { max-width: 760px; margin: 60px auto; padding: 0 20px; color: var(--ink-soft); }
+</style>
+</head>
+<body>
+<div class="bar">
+  <a id="back" href="papers/index.html">← 论文清单</a>
+  <span class="t" id="ptitle">加载中…</span>
+</div>
+<div class="frame-wrap" id="framewrap"></div>
+<div class="err" id="err" hidden>没有找到这篇论文，请从<a href="papers/index.html" style="color:var(--red-deep)">论文清单</a>进入。</div>
+<div class="comments" id="cbox" hidden>
+  <h2>留言</h2>
+  <div id="giscus-mount"></div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var src = params.get('src') || '';
+  var ok = /^papers\/[A-Za-z0-9._-]+\.html$/.test(src);
+  if (!ok) {
+    document.getElementById('err').hidden = false;
+    return;
+  }
+  var iframe = document.createElement('iframe');
+  iframe.src = src;
+  iframe.title = '论文内容';
+  iframe.addEventListener('load', function () {
+    try {
+      var d = iframe.contentDocument;
+      if (d && d.title) {
+        document.title = d.title + ' · 科科';
+        document.getElementById('ptitle').textContent = d.title;
+      }
+      function fit() { try { iframe.style.height = d.documentElement.scrollHeight + 'px'; } catch (e) {} }
+      fit(); setTimeout(fit, 800); setTimeout(fit, 2000);
+      iframe.contentWindow.addEventListener('resize', fit);
+    } catch (e) {}
+  });
+  document.getElementById('framewrap').appendChild(iframe);
+
+  var s = document.createElement('script');
+  s.src = 'https://giscus.app/client.js';
+  s.setAttribute('data-repo', 'zkk995/zkk995.github.io');
+  s.setAttribute('data-repo-id', 'MDEwOlJlcG9zaXRvcnkyODA3Njg2MA==');
+  s.setAttribute('data-category', 'General');
+  s.setAttribute('data-category-id', 'DIC_kwDOAaxrPM4DJfoG');
+  s.setAttribute('data-mapping', 'specific');
+  s.setAttribute('data-term', src);
+  s.setAttribute('data-strict', '1');
+  s.setAttribute('data-reactions-enabled', '1');
+  s.setAttribute('data-emit-metadata', '0');
+  s.setAttribute('data-input-position', 'top');
+  s.setAttribute('data-theme', 'light');
+  s.setAttribute('data-lang', 'zh-CN');
+  s.setAttribute('data-loading', 'lazy');
+  s.setAttribute('crossorigin', 'anonymous');
+  s.setAttribute('async', '');
+  document.getElementById('giscus-mount').appendChild(s);
+  document.getElementById('cbox').hidden = false;
+})();
+</script>
+</body>
+</html>

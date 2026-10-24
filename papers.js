@@ -71,7 +71,8 @@
           ' · <a style="color:inherit" href="https://arxiv.org/abs/' + p.arxiv +
           '" target="_blank" rel="noopener">原文</a>';
       }
-      return '<a class="paper" href="' + PREFIX + p.name + '">'
+      return '<a class="paper" href="' + (IN_PAPERS ? '../' : '')
+        + 'paper-viewer.html?src=papers/' + p.name + '">'
         + '<span class="p-tag">论文解读</span>'
         + '<div class="p-title">' + p.title + ' <span class="arrow">→</span></div>'
         + (meta ? '<div class="p-meta">' + meta + '</div>' : '')
