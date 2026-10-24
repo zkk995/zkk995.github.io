@@ -176,27 +176,50 @@
   }, { threshold: 0.12 });
   document.querySelectorAll('.reveal').forEach(el => io.observe(el));
 
-  fetch('papers-manifest.json?ts=' + Date.now())
-    .then(r => r.json())
-    .then(data => {
-      const box = document.getElementById('paper-list');
-      const papers = (data.papers || []).slice()
-        .sort((a, b) => (b.arxiv || '') .localeCompare(a.arxiv || ''));
-      box.innerHTML = papers.map(p => {
-        const meta = p.arxiv
-          ? 'arXiv:' + p.arxiv + ' · <a style="color:inherit" href="https://arxiv.org/abs/' + p.arxiv + '" target="_blank" rel="noopener">原文</a>'
-          : '论文解读';
-        return '<a class="paper" href="' + p.file + '">'
-          + '<span class="p-tag">论文解读</span>'
-          + '<div class="p-title">' + p.title + ' <span class="arrow">→</span></div>'
-          + '<div class="p-meta">' + meta + '</div>'
-          + '</a>';
-      }).join('');
+  function render(papers) {
+    const box = document.getElementById('paper-list');
+    box.innerHTML = papers.map(p => {
+      const meta = p.arxiv
+        ? 'arXiv:' + p.arxiv + ' · <a style="color:inherit" href="https://arxiv.org/abs/' + p.arxiv + '" target="_blank" rel="noopener">原文</a>'
+        : '论文解读';
+      return '<a class="paper" href="' + p.file + '">'
+        + '<span class="p-tag">论文解读</span>'
+        + '<div class="p-title">' + p.title + ' <span class="arrow">→</span></div>'
+        + '<div class="p-meta">' + meta + '</div>'
+        + '</a>';
+    }).join('');
+  }
+
+  function renderFromManifest() {
+    fetch('papers-manifest.json?ts=' + Date.now())
+      .then(r => r.json())
+      .then(data => render((data.papers || []).slice()
+        .sort((a, b) => (b.arxiv || '').localeCompare(a.arxiv || ''))))
+      .catch(() => {
+        document.getElementById('paper-list').innerHTML =
+          '<div class="card" style="color:var(--ink-soft)">清单加载失败，请稍后刷新。</div>';
+      });
+  }
+
+  // 优先实时读取 papers/ 目录（他人新增解读文件后自动出现），
+  // 接口不可用时退回静态清单。
+  fetch('https://api.github.com/repos/zkk995/zkk995.github.io/contents/papers?ts=' + Date.now())
+    .then(r => { if (!r.ok) throw 0; return r.json(); })
+    .then(entries => {
+      const files = entries.filter(e => e.name.endsWith('.html'));
+      if (!files.length) throw 0;
+      return Promise.all(files.map(f =>
+        fetch('https://raw.githubusercontent.com/zkk995/zkk995.github.io/master/papers/' + f.name + '?ts=' + Date.now())
+          .then(r => r.text())
+          .then(text => {
+            const title = (text.match(/<title>([^<]+)/) || [,'论文解读'])[1].trim();
+            const a = text.match(/arxiv\.org\/abs\/([0-9.]+)/i) || text.match(/arXiv:\s*([0-9.]+)/);
+            return { file: 'papers/' + f.name, title: title, arxiv: a ? a[1] : '' };
+          })
+      ));
     })
-    .catch(() => {
-      document.getElementById('paper-list').innerHTML =
-        '<div class="card" style="color:var(--ink-soft)">清单加载失败，请稍后刷新。</div>';
-    });
+    .then(papers => render(papers.sort((a, b) => (b.arxiv || '').localeCompare(a.arxiv || ''))))
+    .catch(renderFromManifest);
 </script>
 
 </body>
