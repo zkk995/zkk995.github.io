@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>科科 · 个人主页</title>
+<meta name="description" content="科科的个人主页：关于我、家人与 AI 论文解读">
+<style>
+  :root {
+    --paper: #faf7f2;
+    --ink: #2d2a26;
+    --ink-soft: #6f675e;
+    --red: #c8402e;
+    --red-deep: #a33223;
+    --card: #ffffff;
+    --line: rgba(45, 42, 38, 0.12);
+    --gold: #d9a441;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background:
+      radial-gradient(1100px 480px at 50% -120px, rgba(200, 64, 46, 0.08), transparent 70%),
+      radial-gradient(900px 400px at 85% 30%, rgba(217, 164, 65, 0.07), transparent 65%),
+      var(--paper);
+    color: var(--ink);
+    font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+    line-height: 1.8;
+    -webkit-font-smoothing: antialiased;
+  }
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 28px;
+    background: rgba(250, 247, 242, 0.86);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--line);
+  }
+  nav .brand { font-weight: 700; letter-spacing: 0.12em; font-size: 17px; }
+  nav .brand .star { color: var(--red); margin-right: 6px; }
+  nav a { color: var(--ink-soft); text-decoration: none; margin-left: 22px; font-size: 15px; transition: color .2s; }
+  nav a:hover { color: var(--red); }
+  header.hero {
+    max-width: 760px; margin: 0 auto; padding: 88px 24px 64px;
+    text-align: center;
+  }
+  .hero .star-row { font-size: 22px; color: var(--red); letter-spacing: 0.6em; margin-bottom: 18px; }
+  .hero h1 { font-size: 46px; font-weight: 800; letter-spacing: 0.08em; }
+  .hero p.sub { margin-top: 16px; color: var(--ink-soft); font-size: 18px; }
+  .hero .links { margin-top: 26px; }
+  .hero .links a {
+    display: inline-block; margin: 0 8px; padding: 9px 22px;
+    border: 1.5px solid var(--ink); border-radius: 999px;
+    color: var(--ink); text-decoration: none; font-size: 15px;
+    transition: all .2s;
+  }
+  .hero .links a:hover { background: var(--ink); color: #fff; }
+  main { max-width: 860px; margin: 0 auto; padding: 0 24px 90px; }
+  section { margin-top: 72px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 26px; }
+  .sec-head .num {
+    font-size: 13px; color: var(--red); letter-spacing: 0.3em;
+    border: 1px solid var(--red); border-radius: 999px; padding: 2px 12px;
+  }
+  .sec-head h2 { font-size: 30px; letter-spacing: 0.1em; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 18px;
+    padding: 30px 32px; box-shadow: 0 8px 26px rgba(45, 42, 38, 0.06);
+  }
+  .about p { color: var(--ink-soft); font-size: 16.5px; margin-bottom: 12px; }
+  .about p strong { color: var(--ink); }
+  .tags { margin-top: 18px; }
+  .tags span {
+    display: inline-block; margin: 4px 6px 0 0; padding: 5px 14px;
+    background: rgba(200, 64, 46, 0.08); color: var(--red-deep);
+    border-radius: 999px; font-size: 13.5px;
+  }
+  .family-grid { display: grid; grid-template-columns: 300px 1fr; gap: 26px; align-items: center; }
+  @media (max-width: 640px) { .family-grid { grid-template-columns: 1fr; } }
+  .family-grid img.cover {
+    width: 100%; border-radius: 14px; border: 1px solid var(--line);
+    box-shadow: 0 10px 26px rgba(45, 42, 38, 0.12); display: block;
+  }
+  .family-grid h3 { font-size: 22px; margin-bottom: 10px; }
+  .family-grid p { color: var(--ink-soft); font-size: 15.5px; }
+  .family-grid a.book-link {
+    display: inline-block; margin-top: 16px; padding: 9px 24px;
+    background: var(--red); color: #fff; border-radius: 999px;
+    text-decoration: none; font-size: 15px; transition: background .2s;
+  }
+  .family-grid a.book-link:hover { background: var(--red-deep); }
+  .paper-list { display: grid; gap: 18px; }
+  a.paper {
+    display: block; text-decoration: none; color: inherit;
+    background: var(--card); border: 1px solid var(--line); border-radius: 16px;
+    padding: 24px 28px; transition: transform .18s, box-shadow .18s;
+  }
+  a.paper:hover { transform: translateY(-3px); box-shadow: 0 12px 30px rgba(45, 42, 38, 0.1); }
+  a.paper .p-title { font-size: 18px; font-weight: 700; }
+  a.paper .p-title .arrow { color: var(--red); }
+  a.paper .p-meta { margin-top: 6px; color: var(--ink-soft); font-size: 14px; }
+  a.paper .p-tag {
+    display: inline-block; margin-bottom: 8px; font-size: 12.5px;
+    color: var(--red-deep); background: rgba(200, 64, 46, 0.08);
+    padding: 3px 12px; border-radius: 999px;
+  }
+  footer {
+    text-align: center; padding: 40px 20px 56px; color: var(--ink-soft); font-size: 13.5px;
+  }
+  footer .star { color: var(--red); }
+  .reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s ease, transform .7s ease; }
+  .reveal.on { opacity: 1; transform: none; }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand"><span class="star">★</span>科科</div>
+  <div>
+    <a href="#me">我</a>
+    <a href="#family">家人</a>
+    <a href="#ai">它</a>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="star-row">★ ★ ★</div>
+  <h1>你好，我是科科</h1>
+  <p class="sub">读论文，写解读，也给孩子画绘本。</p>
+  <div class="links">
+    <a href="https://github.com/zkk995" target="_blank" rel="noopener">GitHub</a>
+    <a href="#ai">论文解读</a>
+    <a href="#family">绘本</a>
+  </div>
+</header>
+
+<main>
+  <section id="me" class="reveal">
+    <div class="sec-head"><span class="num">壹</span><h2>我</h2></div>
+    <div class="card about">
+      <p>工程师，<strong>大模型训练与推理</strong>方向的长期学习者：训练加速、推理优化、强化学习的新论文都会追一追，读到有意思的就写成通俗解读放在这个页面上。</p>
+      <p>工作之外，喜欢下下<strong>围棋</strong>、写写 Python，偶尔给家里的小朋友做绘本。</p>
+      <div class="tags">
+        <span>大模型</span><span>强化学习</span><span>推理加速</span><span>围棋</span><span>Python</span>
+      </div>
+    </div>
+  </section>
+
+  <section id="family" class="reveal">
+    <div class="sec-head"><span class="num">贰</span><h2>家人</h2></div>
+    <div class="card family-grid">
+      <img class="cover" src="images/pandongzi-cover.png" alt="潘冬子送盐绘本封面">
+      <div>
+        <h3>《潘冬子送盐》绘本</h3>
+        <p>给幼儿园大班孩子讲的革命小故事：潘冬子把盐藏在棉衣里上山，帮游击队送盐。九页水彩，一页一个画面，适合睡前翻着讲。</p>
+        <a class="book-link" href="/pandongzi-picture-book/">翻开绘本 →</a>
+      </div>
+    </div>
+  </section>
+
+  <section id="ai" class="reveal">
+    <div class="sec-head"><span class="num">叁</span><h2>它</h2></div>
+    <div class="paper-list">
+      <a class="paper" href="papers/conjugate-compilation.html">
+        <span class="p-tag">论文解读</span>
+        <div class="p-title">Conjugate Compilation <span class="arrow">→</span></div>
+        <div class="p-meta">arXiv:2610.25012 · 编译如何影响梯度流的收敛结构</div>
+      </a>
+      <a class="paper" href="papers/logra.html">
+        <span class="p-tag">论文解读</span>
+        <div class="p-title">LoGRA <span class="arrow">→</span></div>
+        <div class="p-meta">arXiv:2610.06647 · 低秩梯度近似的训练加速思路</div>
+      </a>
+      <a class="paper" href="papers/RLSVR-2607.23802.html">
+        <span class="p-tag">论文解读</span>
+        <div class="p-title">RLSVR <span class="arrow">→</span></div>
+        <div class="p-meta">arXiv:2607.23802 · 强化学习中的方差约减</div>
+      </a>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span class="star">★</span> 科科 · 用 GitHub Pages 搭建
+</footer>
+
+<script>
+  const io = new IntersectionObserver((es) => {
+    es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('on'); io.unobserve(e.target); } });
+  }, { threshold: 0.12 });
+  document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+</script>
+
+</body>
+</html>

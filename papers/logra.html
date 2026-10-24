@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LoGRA 论文解读：低秩梯度草图如何砍掉 RL 训练近半显存</title>
+<style>
+:root { --ink:#1a1f2e; --muted:#5b6472; --line:#e4e7ee; --accent:#0b62d6; --bg:#f7f8fb; --card:#ffffff; }
+* { box-sizing: border-box; }
+body { margin:0; padding:0; background:var(--bg); color:var(--ink);
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  line-height:1.85; font-size:16px; }
+main { max-width:860px; margin:0 auto; padding:48px 24px 80px; }
+h1 { font-size:27px; line-height:1.45; margin:0 0 8px; }
+h2 { font-size:21px; margin:44px 0 14px; padding-top:18px; border-top:1px solid var(--line); }
+h3 { font-size:17px; margin:26px 0 10px; }
+p { margin:10px 0; }
+.meta { color:var(--muted); font-size:14px; margin-bottom:28px; }
+.lede { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:16px 20px; margin:0 0 8px; }
+.eqwrap { overflow-x:auto; }
+.eq { display:flex; justify-content:center; padding:10px 4px; }
+.eqnote { text-align:center; color:var(--muted); font-size:13.5px; margin-top:2px; }
+ul,ol { padding-left:24px; margin:10px 0; }
+li { margin:6px 0; }
+table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; background:var(--card); }
+th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+th { background:#eef2f8; font-weight:600; }
+.hl { background:#f0f6ff; border:1px solid #d6e6fb; border-radius:8px; padding:12px 18px; margin:14px 0; }
+.caveat { background:#fff8ef; border:1px solid #f3e3c3; border-radius:8px; padding:12px 18px; margin:14px 0; }
+code { background:#eef0f4; border-radius:4px; padding:1px 6px; font-size:14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+.mathml { font-size:105%; }
+footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px; }
+.k { display:inline-block; background:var(--accent); color:#fff; border-radius:4px;
+  padding:0 8px; font-size:13px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>LoGRA 论文解读：用低秩梯度草图，把 RL 训练显存砍掉近一半</h1>
+<p class="meta">LoGRA: Scaling LLM Reinforcement Learning with Low-Rank Gradient Sketches · Shaokun Zhang, Yifan Zhang, Jian Hu, Yueying Li, Hao Zhang, Binfeng Xu, Jan Kautz, Yi Dong（NVIDIA）· arXiv:2610.06647v3 · 代码：Molt 库</p>
+
+<div class="lede">
+<p><strong>一句话总结：</strong>RL 后训练贵在显存——梯度缓存和 Adam 动量比模型权重还占地方。LoGRA 不存完整梯度，而是把学习信号压成两个瘦矩阵的乘积（低秩"草图"），再用一个"预测 KL"控制器限制每步更新的幅度。结果是：7B 模型平均显存降 45.7%，27B 模型在单台 8 卡 H100 机器上从" dense Adam 直接爆显存"变成能稳定训练 1100 多步，而且做题准确率不掉。</p>
+</div>
+
+<h2>一、为什么 RL 训练这么吃显存？</h2>
+<p>跑推理只需要权重，但用 RL 改进模型，还要多养两块"吞金兽"：梯度缓存和优化器状态。论文给了一笔账：一个 7B 的 Qwen 模型，BF16 权重约 14 GB，而 Adam 的两个 FP32 动量缓存再加 56 GB——这还没算梯度和激活值。所以经常出现"这台机器跑得动模型，却训不动模型"的尴尬。</p>
+<p>已有方案各有路数：FSDP 分片、激活检查点、CPU 卸载是系统层面的省法；LoRA 冻住原权重、只训小适配器。LoGRA 选了第三条路：<strong>权重矩阵照常全量训练，但从不物化完整梯度</strong>——学习信号被压缩进低秩草图中。直觉是：二值结果奖励下，每条生成的回答只带来一个"对/错"信号，这么少的信息量，可能根本用不着一个完整的稠密梯度来表达。</p>
+
+<h2>二、核心方法一：低秩梯度草图</h2>
+<h3>2.1 从完整梯度说起</h3>
+<p>设策略网络为 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>π</mi><mi>θ</mi></msub></mrow><annotation encoding="application/x-tex">\pi_\theta</annotation></semantics></math>，取其中一个权重矩阵 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>W</mi><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>d</mi><mo>×</mo><mi>k</mi></mrow></msup></mrow><annotation encoding="application/x-tex">W\in\mathbb{R}^{d\times k}</annotation></semantics></math>。它的梯度 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>G</mi></mrow><annotation encoding="application/x-tex">G</annotation></semantics></math> 和 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>W</mi></mrow><annotation encoding="application/x-tex">W</annotation></semantics></math> 同形状，普通 SGD 更新是：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>G</mi><mo>=</mo><msub><mi mathvariant="normal">∇</mi><mi>W</mi></msub><mi mathvariant="script">L</mi><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>d</mi><mo>×</mo><mi>k</mi></mrow></msup><mo separator="true">,</mo><mspace width="2em"/><mi>W</mi><mo>←</mo><mi>W</mi><mo>−</mo><mi>η</mi><mi>G</mi></mrow><annotation encoding="application/x-tex">G=\nabla_{W}\mathcal{L}\in\mathbb{R}^{d\times k},\qquad W\leftarrow W-\eta G</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (1)：标准全梯度更新，η 是学习率</div>
+<p>常规做法要把每个 microbatch 的贡献累进一个完整的 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mo>×</mo><mi>k</mi></mrow><annotation encoding="application/x-tex">d\times k</annotation></semantics></math> 梯度缓存，这就要额外存 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mi>k</mi></mrow><annotation encoding="application/x-tex">dk</annotation></semantics></math> 个数。</p>
+
+<h3>2.2 关键一步：把梯度压成草图</h3>
+<p>LoGRA 取一个远小于矩阵维数的秩 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi></mrow><annotation encoding="application/x-tex">r</annotation></semantics></math>，再随机采样一个投影矩阵 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>r</mi><mo>×</mo><mi>k</mi></mrow></msup></mrow><annotation encoding="application/x-tex">A\in\mathbb{R}^{r\times k}</annotation></semantics></math>，用"梯度乘投影"来代表梯度：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>S</mi><mo>=</mo><mi>G</mi><msup><mi>A</mi><mi mathvariant="normal">⊤</mi></msup><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>d</mi><mo>×</mo><mi>r</mi></mrow></msup></mrow><annotation encoding="application/x-tex">S=GA^{\top}\in\mathbb{R}^{d\times r}</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (2)：把 G 的 k 列压成 S 的 r 列，存储量从 dk 降到 dr</div>
+<p>投影矩阵 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math> 不需要学习——默认取独立随机符号（±1）再除以 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msqrt><mi>r</mi></msqrt></mrow><annotation encoding="application/x-tex">\sqrt{r}</annotation></semantics></math>（Rademacher 投影），而且每一步重新采样。妙处在于：<strong>实现上根本不用先算出完整的 G 再压缩</strong>。反向传播时，本来就要算"输入 × 反向导数"，LoGRA 把输入先投影一遍再乘，小批量的贡献就直接累进 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>S</mi></mrow><annotation encoding="application/x-tex">S</annotation></semantics></math> 了，完整梯度从头到尾不存在。</p>
+
+<h3>2.3 用草图更新权重</h3>
+<p>更新时把草图展开回 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mo>×</mo><mi>k</mi></mrow><annotation encoding="application/x-tex">d\times k</annotation></semantics></math>：用 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><mo>=</mo><mi>S</mi><mi>A</mi></mrow><annotation encoding="application/x-tex">\widehat{G}=SA</annotation></semantics></math> 近似替代 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>G</mi></mrow><annotation encoding="application/x-tex">G</annotation></semantics></math>，</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><mo>=</mo><mi>S</mi><mi>A</mi><mo>∈</mo><msup><mi mathvariant="double-struck">R</mi><mrow><mi>d</mi><mo>×</mo><mi>k</mi></mrow></msup><mo separator="true">,</mo><mspace width="2em"/><mi>W</mi><mo>←</mo><mi>W</mi><mo>−</mo><mi>η</mi><mtext> </mtext><mi>S</mi><mi>A</mi></mrow><annotation encoding="application/x-tex">\widehat{G}=SA\in\mathbb{R}^{d\times k},\qquad W\leftarrow W-\eta\,SA</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (3)：SA 与 G 同形状，但只用 S（d×r）和 A（r×k）两个小矩阵表示</div>
+<p>虽然 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>S</mi><mi>A</mi></mrow><annotation encoding="application/x-tex">SA</annotation></semantics></math> 展开是满大小的，但它的每一列都是 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>S</mi></mrow><annotation encoding="application/x-tex">S</annotation></semantics></math> 那 r 列的组合——所以更新量的秩至多是 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi></mrow><annotation encoding="application/x-tex">r</annotation></semantics></math>。优化器可以先把草图调整一遍（记调整后的为 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>U</mi></mrow><annotation encoding="application/x-tex">U</annotation></semantics></math>，朴素 SGD 时 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>U</mi><mo>=</mo><mi>S</mi></mrow><annotation encoding="application/x-tex">U=S</annotation></semantics></math>），实际更新为：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>W</mi><mo>←</mo><mi>W</mi><mo>−</mo><mi>α</mi><mi>η</mi><mtext> </mtext><mi>U</mi><mi>A</mi></mrow><annotation encoding="application/x-tex">W\leftarrow W-\alpha\eta\,UA</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (4)：η 是名义学习率，α 是额外的步长系数，由后文的 KL 控制器决定</div>
+
+<h3>2.4 省了多少？</h3>
+<p>梯度累积器从 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mi>k</mi></mrow><annotation encoding="application/x-tex">dk</annotation></semantics></math> 个数降到 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mi>r</mi></mrow><annotation encoding="application/x-tex">dr</annotation></semantics></math> 个数。论文举例：<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi><mo>=</mo><mi>k</mi><mo>=</mo><mn>4096</mn></mrow><annotation encoding="application/x-tex">d=k=4096</annotation></semantics></math>、<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi><mo>=</mo><mn>64</mn></mrow><annotation encoding="application/x-tex">r=64</annotation></semantics></math> 时，fp32 梯度缓存从 64 MiB 掉到 1 MiB。更妙的是，这套压缩表示还能顺手解决 <strong>训练端→生成端的策略同步</strong>：只需把 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>α</mi><mi>η</mi><mi>U</mi></mrow><annotation encoding="application/x-tex">\alpha\eta U</annotation></semantics></math> 加一个 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math> 的随机种子发给生成引擎（种子能重放出同一个 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math>），通信量从完整矩阵降到 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>O</mi><mo stretchy="false">(</mo><mi>d</mi><mi>r</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">O(dr)</annotation></semantics></math>。</p>
+
+<h3>2.5 整体流程</h3>
+<ul>
+<li>对注意力层和 MLP 的投影矩阵套用草图，其他参数冻结不动；每个矩阵有自己的 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math>、<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>S</mi></mrow><annotation encoding="application/x-tex">S</annotation></semantics></math>、<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>U</mi></mrow><annotation encoding="application/x-tex">U</annotation></semantics></math>，<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>α</mi></mrow><annotation encoding="application/x-tex">\alpha</annotation></semantics></math> 全局共享；</li>
+<li>每步重新采样 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>A</mi></mrow><annotation encoding="application/x-tex">A</annotation></semantics></math>：不同步的更新走不同子空间，多步累加就不必困在同一个秩-<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>r</mi></mrow><annotation encoding="application/x-tex">r</annotation></semantics></math> 子空间里；</li>
+<li>更新直接加进完整权重矩阵，<strong>没有旁路适配器</strong>——这是和 LoRA 的本质区别。</li>
+</ul>
+
+<h2>三、核心方法二：RowAdam 优化器</h2>
+<p>为了和 dense Adam 公平对比，LoGRA 保留"根据历史梯度自适应缩放"的性质，但作用在行级别：RowAdam 对草图的每一行维护一个二阶矩估计 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>v</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub></mrow><annotation encoding="application/x-tex">v_{t,i}</annotation></semantics></math>，按行缩放（不做一阶动量）：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>v</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub><mo>=</mo><msub><mi>β</mi><mn>2</mn></msub><mtext> </mtext><msub><mi>v</mi><mrow><mi>t</mi><mo>−</mo><mn>1</mn><mo separator="true">,</mo><mi>i</mi></mrow></msub><mo>+</mo><mo stretchy="false">(</mo><mn>1</mn><mo>−</mo><msub><mi>β</mi><mn>2</mn></msub><mo stretchy="false">)</mo><mtext> </mtext><mfrac><mn>1</mn><mi>r</mi></mfrac><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mi>r</mi></munderover><mo stretchy="false">(</mo><msub><mi>S</mi><mi>t</mi></msub><msubsup><mo stretchy="false">)</mo><mrow><mi>i</mi><mi>j</mi></mrow><mn>2</mn></msubsup></mrow><annotation encoding="application/x-tex">v_{t,i}=\beta_{2}\,v_{t-1,i}+(1-\beta_{2})\,\frac{1}{r}\sum_{j=1}^{r}(S_{t})_{ij}^{2}</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (15a)：第 i 行平方幅度的指数滑动平均，β₂ 控制记住多少历史</div>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mo stretchy="false">(</mo><msub><mover accent="true"><mi>U</mi><mo stretchy="true">~</mo></mover><mi>t</mi></msub><msub><mo stretchy="false">)</mo><mrow><mi>i</mi><mo separator="true">,</mo><mo>:</mo></mrow></msub><mo>=</mo><mfrac><mrow><mo stretchy="false">(</mo><msub><mi>S</mi><mi>t</mi></msub><msub><mo stretchy="false">)</mo><mrow><mi>i</mi><mo separator="true">,</mo><mo>:</mo></mrow></msub></mrow><mrow><msqrt><msub><mover accent="true"><mi>v</mi><mo stretchy="true">^</mo></mover><mrow><mi>t</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub></msqrt><mo>+</mo><msub><mi>ϵ</mi><mi>t</mi></msub></mrow></mfrac><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>v</mi><mo stretchy="true">^</mo></mover><mrow><mi>t</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub><mo>=</mo><mfrac><msub><mi>v</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub><mrow><mn>1</mn><mo>−</mo><msubsup><mi>β</mi><mn>2</mn><mrow><mtext> </mtext><mi>t</mi></mrow></msubsup></mrow></mfrac></mrow><annotation encoding="application/x-tex">(\widetilde{U}_{t})_{i,:}=\frac{(S_{t})_{i,:}}{\sqrt{\widehat{v}_{t,i}}+\epsilon_{t}},\qquad \widehat{v}_{t,i}=\frac{v_{t,i}}{1-\beta_{2}^{\,t}}</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (15b)：行缩放；v̂ 的分母是零初始化的偏差修正；缩放后再整体归一，保持草图总幅度不变</div>
+<p>主实验用 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>β</mi><mn>2</mn></msub><mo>=</mo><mn>0.95</mn></mrow><annotation encoding="application/x-tex">\beta_2=0.95</annotation></semantics></math>。梯度长期偏大的行会被压低贡献，但整体范数保持不变——只调相对比例，不动总幅度。关键是，每个矩阵只需存 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>d</mi></mrow><annotation encoding="application/x-tex">d</annotation></semantics></math> 个二阶矩数值，而不是每个权重一个。</p>
+
+<h2>四、核心方法三：预测 KL 步长控制</h2>
+<p>压完梯度还得回答"这步能迈多大"。参数空间里看着不大的更新，可能让下一个 token 的概率剧变。延续 TRPO 的信赖域思想，LoGRA 在应用每次更新前，先估计这次更新会把策略改动多少。</p>
+<p>设提议更新为 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>D</mi></mrow><annotation encoding="application/x-tex">D</annotation></semantics></math>（对每个压缩矩阵，<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>D</mi><mi>W</mi></msub><mo>=</mo><mo>−</mo><mi>η</mi><mi>U</mi><mi>A</mi></mrow><annotation encoding="application/x-tex">D_W=-\eta UA</annotation></semantics></math>），缩放后为 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>θ</mi><mo>←</mo><mi>θ</mi><mo>+</mo><mi>α</mi><mi>D</mi></mrow><annotation encoding="application/x-tex">\theta\leftarrow\theta+\alpha D</annotation></semantics></math>。取当前批次里的一小撮回答作为考察上下文集合 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="script">P</mi></mrow><annotation encoding="application/x-tex">\mathcal{P}</annotation></semantics></math>，新旧策略在这些上下文上的平均 KL 散度有解析近似：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mfrac><mn>1</mn><mrow><mi mathvariant="normal">∣</mi><mi mathvariant="script">P</mi><mi mathvariant="normal">∣</mi></mrow></mfrac><munder><mo>∑</mo><mrow><mi>s</mi><mo>∈</mo><mi mathvariant="script">P</mi></mrow></munder><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><mi>s</mi><mo stretchy="false">)</mo><mtext> </mtext><mo fence="true" lspace="0.05em" rspace="0.05em">∥</mo><mtext> </mtext><msub><mi>π</mi><mrow><mi>θ</mi><mo>+</mo><mi>α</mi><mi>D</mi></mrow></msub><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><mi>s</mi><mo stretchy="false">)</mo><mo fence="true">)</mo></mrow><mo>≈</mo><msup><mi>α</mi><mn>2</mn></msup><mtext> </mtext><mi>q</mi><mo stretchy="false">(</mo><mi>D</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\frac{1}{|\mathcal{P}|}\sum_{s\in\mathcal{P}}D_{\mathrm{KL}}\!\left(\pi_{\theta}(\cdot\mid s)\,\middle\|\,\pi_{\theta+\alpha D}(\cdot\mid s)\right)\approx\alpha^{2}\,q(D)</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (5)：预测 KL 与步长系数的平方成正比——α 减半，预测 KL 降到四分之一</div>
+<p>而 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>q</mi><mo stretchy="false">(</mo><mi>D</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">q(D)</annotation></semantics></math> 可以用 token 分数的变动速率算出来。记 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>p</mi><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo>=</mo><mi mathvariant="normal">softmax</mi><mo>⁡</mo><mo stretchy="false">(</mo><mi>z</mi><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mi mathvariant="normal">/</mi><mi>T</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">p(s)=\operatorname{softmax}(z(s)/T)</annotation></semantics></math> 是温度 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>T</mi></mrow><annotation encoding="application/x-tex">T</annotation></semantics></math> 下的 token 概率，<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mover accent="true"><mi>z</mi><mo>˙</mo></mover><mi>v</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\dot{z}_v(s)</annotation></semantics></math> 是分数沿更新方向 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>D</mi></mrow><annotation encoding="application/x-tex">D</annotation></semantics></math> 的变化速率，则：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>q</mi><mo stretchy="false">(</mo><mi>D</mi><mo stretchy="false">)</mo><mo>=</mo><mfrac><mn>1</mn><mrow><mn>2</mn><mi mathvariant="normal">∣</mi><mi mathvariant="script">P</mi><mi mathvariant="normal">∣</mi><mtext> </mtext><msup><mi>T</mi><mn>2</mn></msup></mrow></mfrac><munder><mo>∑</mo><mrow><mi>s</mi><mo>∈</mo><mi mathvariant="script">P</mi></mrow></munder><msub><mrow><mi mathvariant="normal">Var</mi><mo>⁡</mo></mrow><mrow><mi>v</mi><mo>∼</mo><mi>p</mi><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><msub><mover accent="true"><mi>z</mi><mo>˙</mo></mover><mi>v</mi></msub><mo stretchy="false">(</mo><mi>s</mi><mo stretchy="false">)</mo><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">q(D)=\frac{1}{2|\mathcal{P}|\,T^{2}}\sum_{s\in\mathcal{P}}\operatorname{Var}_{v\sim p(s)}\!\left[\dot{z}_{v}(s)\right]</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (6)：按当前概率加权的"分数变化幅度差异"的方差，除以 2T²——分数变化越参差，策略被改动得越多</div>
+<p>给定每步允许的平均预测 KL 预算 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>δ</mi></mrow><annotation encoding="application/x-tex">\delta</annotation></semantics></math>，用平方关系解出缩放系数：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>α</mi><mo>=</mo><mi>min</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">{</mo><msub><mi>α</mi><mi>max</mi><mo>⁡</mo></msub><mo separator="true">,</mo><mtext>  </mtext><msqrt><mrow><mi>δ</mi><mi mathvariant="normal">/</mi><mi>q</mi><mo stretchy="false">(</mo><mi>D</mi><mo stretchy="false">)</mo></mrow></msqrt><mo fence="true">}</mo></mrow></mrow><annotation encoding="application/x-tex">\alpha=\min\!\left\{\alpha_{\max},\;\sqrt{\delta/q(D)}\right\}</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (7)：预算比提议大时不无限放大（封顶 α_max），预算紧时按比例收缩</div>
+<p>注意这是一个用于控制的局部估计，不是保证——实际发生的 KL 可能和预测有出入。预算本身可以固定，也可以退火：训练后期允许的策略变动越来越小。</p>
+
+<h3>补充细节：失配扣除与预算退火</h3>
+<p>主实验的预算按余弦从 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>δ</mi><mi>max</mi><mo>⁡</mo></msub><mo>=</mo><mn>2</mn><mo>×</mo><msup><mn>10</mn><mrow><mo>−</mo><mn>4</mn></mrow></msup></mrow><annotation encoding="application/x-tex">\delta_{\max}=2\times10^{-4}</annotation></semantics></math> 退火到 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>δ</mi><mi>min</mi><mo>⁡</mo></msub><mo>=</mo><mn>2</mn><mo>×</mo><msup><mn>10</mn><mrow><mo>−</mo><mn>5</mn></mrow></msup></mrow><annotation encoding="application/x-tex">\delta_{\min}=2\times10^{-5}</annotation></semantics></math>：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>δ</mi><mi>u</mi></msub><mo>=</mo><msub><mi>δ</mi><mi>min</mi><mo>⁡</mo></msub><mo>+</mo><mfrac><mrow><msub><mi>δ</mi><mi>max</mi><mo>⁡</mo></msub><mo>−</mo><msub><mi>δ</mi><mi>min</mi><mo>⁡</mo></msub></mrow><mn>2</mn></mfrac><mrow><mo fence="true">[</mo><mn>1</mn><mo>+</mo><mi>cos</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mi>π</mi><mtext> </mtext><mfrac><mrow><mi>u</mi><mo>−</mo><mn>1</mn></mrow><mrow><mi>H</mi><mo>−</mo><mn>1</mn></mrow></mfrac><mo fence="true">)</mo></mrow><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\delta_{u}=\delta_{\min}+\frac{\delta_{\max}-\delta_{\min}}{2}\left[1+\cos\!\left(\pi\,\frac{u-1}{H-1}\right)\right]</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (16)：H=300 步的余弦退火预算</div>
+<p>另外，训练引擎和生成引擎在"名义相同权重"下算出的概率常有细微出入（失配）。LoGRA 把这个差值估计出来（记为 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>κ</mi><mi>u</mi></msub></mrow><annotation encoding="application/x-tex">\kappa_u</annotation></semantics></math>，滚动平均平滑），从预算里扣掉，并设置不低于一半的下限：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>δ</mi><mi>u</mi><mrow><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">f</mi></mrow></msubsup><mo>=</mo><mi>max</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>δ</mi><mi>u</mi></msub><mo>−</mo><msub><mi>κ</mi><mi>u</mi></msub><mo separator="true">,</mo><mtext>  </mtext><mn>0.5</mn><mtext> </mtext><msub><mi>δ</mi><mi>u</mi></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">\delta_{u}^{\mathrm{eff}}=\max\!\left(\delta_{u}-\kappa_{u},\;0.5\,\delta_{u}\right)</annotation></semantics></math></div></div>
+<div class="eqnote">公式 (17)：失配扣除后的有效预算</div>
+
+<h2>五、实验结果</h2>
+<h3>5.1 主要结果：更省显存，做题不掉分</h3>
+<p>设置：单节点 8×H100 80GB，4 卡 FSDP 训练 + 4 卡独立生成；Qwen2.5-Math-1.5B/7B 与 Qwen3.8-27B，在 DAPO-Math-7.5K 上训练，MATH-500 上评测；故意用极简 PPO（每题采样 1 条回答、全局滑动奖励基线），以隔离显存方法本身的效果。LoGRA 用秩 256 的 RowAdam + 失配扣除 + 预测 KL 退火；基线用学习率退火的 dense Adam。每组 3 个随机种子。</p>
+<table>
+<tr><th>模型</th><th>方法</th><th>平均显存 (GiB/GPU)</th><th>峰值显存</th><th>更新/小时</th><th>峰值 Pass@1</th><th>峰值 Pass@4</th></tr>
+<tr><td>1.5B</td><td>Dense Adam</td><td>9.18</td><td>9.19</td><td>54.28</td><td>63.77%</td><td>80.33%</td></tr>
+<tr><td>1.5B</td><td><strong>LoGRA</strong></td><td><strong>7.18</strong>（−21.8%）</td><td><strong>8.66</strong></td><td>55.44</td><td><strong>67.87%</strong></td><td><strong>82.47%</strong></td></tr>
+<tr><td>7B</td><td>Dense Adam</td><td>31.82</td><td>31.85</td><td>25.28</td><td>72.48%</td><td>85.33%</td></tr>
+<tr><td>7B</td><td><strong>LoGRA</strong></td><td><strong>17.29</strong>（−45.7%）</td><td><strong>22.26</strong></td><td>25.73</td><td>72.33%</td><td>85.13%</td></tr>
+<tr><td>27B</td><td>Dense Adam</td><td>OOM（第一步分配 Adam 状态就爆）</td><td>—</td><td>—</td><td>—</td><td>—</td></tr>
+<tr><td>27B</td><td><strong>LoGRA</strong></td><td><strong>51.54</strong></td><td>53.88</td><td>6.99</td><td><strong>71.52%</strong></td><td><strong>81.87%</strong></td></tr>
+</table>
+<ul>
+<li><strong>1.5B：</strong>平均显存降 21.8%，Pass@1 反而高出 4.1 个百分点（67.87% vs 63.77%）；</li>
+<li><strong>7B：</strong>平均显存降 45.7%（这就是标题里那个数字的出处），Pass@1 基本打平（72.33% vs 72.48%）；</li>
+<li><strong>27B：</strong>dense Adam 在分配 Adam 状态的第一步就 OOM；LoGRA 平均每卡 51.54 GiB 稳定跑通；</li>
+<li><strong>速度：</strong>两者都能跑完的 1.5B/7B 上，端到端吞吐相当（55 vs 54、26 vs 25 次更新/小时）——省显存没有用速度换。</li>
+</ul>
+
+<h3>5.2 长跑验证：27B 单机 1100+ 步</h3>
+<p>在 8 任务的 Reasoning-Gym Hard 混合题库（38,948 道训练题、193 道保留题）上，Qwen3.8-27B 用 LoGRA + 预测 KL 连续训练：</p>
+<ul>
+<li>保留题宏平均验证得分从 <strong>39.69% 涨到 62.94%</strong>，第 1,060 步达到峰值 65.52%；</li>
+<li>平均回答长度从 8,312 降到 4,705 tokens，截断率从 34.72% 降到 12.95%——没有出现奖励投机式的回答膨胀，也没有训练崩溃。</li>
+</ul>
+<p>要注意 dense Adam 在同样硬件上根本跑不起来，所以这是一条"可行性 + 学习曲线"的轨迹，不是与 dense 基线的对决。</p>
+
+<h3>5.3 消融：什么因素最要紧？</h3>
+<ul>
+<li><strong>秩是最关键的设计。</strong>秩从 4 提到 256，Pass@1 提升 3.02–3.95 个百分点。秩 256 时固定 Rademacher、刷新 Rademacher、刷新高斯分别拿到 68.50%、68.31%、67.42%——排序随秩变化，刷新与否没有一致收益；</li>
+<li><strong>梯度重建质量几乎只由秩决定。</strong>重建与完整梯度的余弦相似度（Frobenius 夹角，见下方公式）从秩 4 的 0.046 升到秩 256 的 0.348；固定 vs 刷新基的差异最大只有 0.0014，高斯 vs Rademacher 差异不足 0.0002。也就是说单个小批量内的梯度重建确实很"低秩不精确"，但训练照常有效——这侧面印证了"RL 学习信号本来就只需要极少信息"的直觉；</li>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>cos</mi><mo>⁡</mo><mo stretchy="false">(</mo><mi>G</mi><mo separator="true">,</mo><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><mo stretchy="false">)</mo><mo>=</mo><mfrac><mrow><munder><mo>∑</mo><mrow><mi>i</mi><mo separator="true">,</mo><mi>j</mi></mrow></munder><msub><mi>G</mi><mrow><mi>i</mi><mi>j</mi></mrow></msub><mtext> </mtext><msub><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><mrow><mi>i</mi><mi>j</mi></mrow></msub></mrow><mrow><mo stretchy="false">∥</mo><mi>G</mi><msub><mo stretchy="false">∥</mo><mi>F</mi></msub><mtext> </mtext><mo stretchy="false">∥</mo><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><msub><mo stretchy="false">∥</mo><mi>F</mi></msub></mrow></mfrac><mo separator="true">,</mo><mspace width="2em"/><mover accent="true"><mi>G</mi><mo stretchy="true">^</mo></mover><mo>=</mo><mo stretchy="false">(</mo><mi>G</mi><msup><mi>A</mi><mi mathvariant="normal">⊤</mi></msup><mo stretchy="false">)</mo><mi>A</mi></mrow><annotation encoding="application/x-tex">\cos(G,\widehat{G})=\frac{\sum_{i,j}G_{ij}\,\widehat{G}_{ij}}{\lVert G\rVert_{F}\,\lVert \widehat{G}\rVert_{F}},\qquad \widehat{G}=(GA^{\top})A</annotation></semantics></math></div></div>
+<div class="eqnote">梯度重建质量度量： reconstruction 与完整梯度的 Frobenius 夹角余弦</div>
+<li><strong>KL 控制值得做，预算要保守。</strong>训练后期（700–800 步平均）：不做控制 70.30%，大预算（1.5×10⁻³）掉到 63.43%，小预算（1.5×10⁻⁴）71.03%，退火预算最高 71.47%。宽松预算反而坏事，退火最稳；</li>
+<li><strong>和 LoRA 比（1.5B，前 300 步）：</strong>LoGRA 平均显存 7.18 vs LoRA 的 13.21 GiB，Pass@4 略高（81.80% vs 81.40%），Pass@1 略低（68.47% vs 70.45%）。论文的定位很诚实：这是"显存是瓶颈时的另一种选择"，不是全面超越。</li>
+</ul>
+
+<h2>六、它和 LoRA 到底差在哪？</h2>
+<p>两者都玩"低秩"，但对象完全不同：<strong>LoRA 冻结原权重，学一对低秩适配器；LoGRA 压缩的是梯度，更新照样写进完整权重。</strong>LoRA 的低秩约束是持久的（模型能力被限定在适配器子空间里），LoGRA 每步换投影方向，多步累加不受秩约束，且梯度、优化器状态、策略同步通信三处一起省。血统上，LoGRA 可视为 GaLore / Flora 这条"梯度压缩"路线在 RL 后训练场景的延伸，差异在于：草图在反向传播中直接累积（不物化完整梯度），并把压缩表示复用到 rollout 策略同步上。</p>
+
+<h2>七、冷静看：这篇论文证明了什么、没证明什么</h2>
+<div class="caveat">
+<ul>
+<li><strong>45.7% 不是万能常数</strong>——它是 7B 模型在该设置下对 dense Adam 的平均显存降幅；1.5B 是 21.8%，27B 没有 dense 对照可算比值；</li>
+<li><strong>不能推广为"LoGRA 比 Adam/LoRA 更准"</strong>——7B 峰值 Pass@1 只是打平；与 LoRA 的比较限定在特定配方的前 300 步；</li>
+<li><strong>27B 长跑没有 paired dense 基线</strong>（dense OOM 了），它证明的是可行性和学习曲线；</li>
+<li><strong>预测 KL ≠ 实际 KL</strong>——控制器用的是局部估计，实际偏差可能不同；</li>
+<li>27B 长跑用有限差分探针估算 q(D)，而非公式 (6) 的 JVP 估计器——工程实现与理论公式有取舍。</li>
+</ul>
+</div>
+
+<h2>八、为什么值得关注</h2>
+<p>对算力有限的团队，这篇论文指出了一个朴素的杠杆：<strong>梯度的"表示方式"本身就是省显存的抓手</strong>。模型跑得动但 RL 训不动的墙，被"把学习信号压成草图 + 用 KL 预算踩刹车"这个组合撬开了。全量权重更新、更小的梯度/优化器占用、更小的同步载荷——三件事用同一套低秩表示解决，这是设计上最漂亮的一点。代码在 Molt 库开源，建议在自己的 FSDP/生成切分和奖励设置下复现验证，再评估收益是否可迁移。</p>
+
+<footer>依据 arXiv:2610.06647v3（2026-10-17）整理 · 公式为原生 MathML 渲染 · 页面生成于 2026-10-22</footer>
+</main>
+</body>
+</html>

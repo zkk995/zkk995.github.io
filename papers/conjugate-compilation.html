@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Conjugate Compilation 论文解读</title>
+<style>
+:root {
+  --bg: #f7f8fa;
+  --ink: #1d2733;
+  --muted: #5c6b7a;
+  --line: #dde3ea;
+  --draft: #2e7d52;
+  --target: #5b4ea0;
+  --accent: #0f5aa8;
+  --accent-soft: #e8f0fa;
+  --card: #ffffff;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 16px/1.75 -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+}
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 20px 60px; }
+header { padding: 44px 0 20px; border-bottom: 1px solid var(--line); }
+.kicker { color: var(--accent); font-size: 14px; letter-spacing: .08em; margin: 0 0 6px; }
+h1 { font-size: 27px; line-height: 1.35; margin: 0 0 10px; }
+.meta { color: var(--muted); font-size: 14px; margin: 0; }
+.thesis {
+  background: var(--card); border: 1px solid var(--line); border-left: 4px solid var(--accent);
+  border-radius: 8px; padding: 16px 18px; margin: 22px 0 8px;
+}
+.thesis strong { color: var(--accent); }
+h2 { font-size: 20px; margin: 42px 0 6px; padding-top: 8px; }
+h2 .no { color: var(--accent); font-variant-numeric: tabular-nums; margin-right: 6px; }
+p { margin: 8px 0 14px; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+.card h3 { margin: 0 0 8px; font-size: 16.5px; }
+.formula { text-align: center; margin: 14px 0; overflow-x: auto; }
+math { font-size: 108%; }
+math[display="block"] { margin: .4rem auto; }
+.formula-note { text-align: center; color: var(--muted); font-size: 13.5px; margin: -6px 0 12px; }
+/* 时间轴示意 */
+.timeline { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; margin: 14px 0; }
+.tl-row { display: flex; align-items: center; gap: 10px; margin: 10px 0; }
+.tl-label { flex: 0 0 168px; font-size: 13px; color: var(--muted); }
+.tl-track { flex: 1; display: flex; height: 22px; border-radius: 4px; overflow: hidden; background: #eef1f4; }
+.seg { height: 100%; min-width: 2px; }
+.seg.d { background: var(--draft); }
+.seg.t { background: var(--target); }
+.seg.i { background: repeating-linear-gradient(135deg, var(--target) 0 7px, var(--draft) 7px 14px); }
+.tl-legend { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--muted); margin-top: 10px; }
+.lg { display: inline-flex; align-items: center; gap: 6px; }
+.sw { width: 14px; height: 14px; border-radius: 3px; display: inline-block; }
+/* 流程环 */
+.loop { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 12px 0 4px; }
+.loop .node {
+  flex: 1 1 150px; background: var(--accent-soft); border: 1px solid #c6d9ef; border-radius: 8px;
+  padding: 10px 12px; font-size: 14px;
+}
+.loop .node b { display: block; font-size: 14.5px; margin-bottom: 2px; }
+.loop .node span { color: var(--muted); font-size: 13px; }
+.loop .arr { align-self: center; color: var(--accent); font-size: 18px; flex: 0 0 auto; }
+/* 结果条 */
+.bars { margin: 12px 0; }
+.bar-row { display: flex; align-items: center; gap: 10px; margin: 8px 0; }
+.bar-name { flex: 0 0 200px; font-size: 13.5px; }
+.bar-name small { color: var(--muted); }
+.bar-track { flex: 1; background: #eef1f4; border-radius: 4px; height: 20px; position: relative; }
+.bar-fill { height: 100%; border-radius: 4px; background: linear-gradient(90deg, #3f78c0, var(--accent)); }
+.bar-val { flex: 0 0 56px; font-variant-numeric: tabular-nums; font-size: 13.5px; text-align: right; }
+/* 事实/推断 */
+.verdict { display: flex; gap: 12px; flex-wrap: wrap; }
+.verdict .card { flex: 1 1 260px; margin: 6px 0; }
+.tag { display: inline-block; font-size: 12px; border-radius: 999px; padding: 1px 10px; margin-right: 6px; vertical-align: 2px; }
+.tag.fact { background: #e3f2e9; color: #1d6b43; }
+.tag.infer { background: #fdf1dc; color: #8a6116; }
+footer { margin-top: 46px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 13.5px; }
+code { font-family: "SF Mono", Consolas, monospace; font-size: 13.5px; background: #eef1f4; border-radius: 4px; padding: 1px 6px; }
+@media (max-width: 640px) {
+  h1 { font-size: 23px; }
+  .tl-label { flex-basis: 100%; }
+  .bar-name { flex-basis: 130px; }
+  .bar-name small { display: block; }
+}
+</style>
+</head>
+<body data-visualization-style="knowledge-technology">
+<div class="wrap">
+
+<header>
+  <p class="kicker">论文解读 · 推理加速 / 投机解码</p>
+  <h1>Conjugate Compilation：把草稿与大模型放进同一个编译边界</h1>
+  <p class="meta">arXiv:2610.25012 · 2026年10月18日提交 · UCSD / MIT / UT Austin / 微软 · 实验：NVIDIA B300 与 RTX 5090</p>
+  <div class="thesis">
+    <strong>一句话：</strong>它不提出新的投机解码算法，而是把编译器的优化边界从"单个模型"扩到"同一张卡上的 draft + target 两个模型"——用共置执行后的<strong>实测性能</strong>来指导跨模型编译决策，把两个模型各自跑不满 GPU 时浪费的碎片算力捡回来。
+  </div>
+</header>
+
+<h2><span class="no">01</span>问题：两个模型在合作，编译器却各管各的</h2>
+<p>投机解码里，小 draft 模型先出 γ 个草稿 token，大 target 模型一次前向验证。传统部署中两个模型<strong>分别编译、顺序执行</strong>：γ 步草稿全部跑完，验证才开始。设单步草稿耗时 T<sub>D</sub>、验证耗时 T<sub>V</sub>，则：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>T</mi><mtext>conventional</mtext></msub><mo>=</mo><mi>γ</mi><mtext> </mtext><msub><mi>T</mi><mi>D</mi></msub><mo>+</mo><msub><mi>T</mi><mi>V</mi></msub></mrow><annotation encoding="application/x-tex">T_{\text{conventional}} = \gamma\,T_D + T_V</annotation></semantics></math></div>
+<p class="formula-note">绿色段与紫色段完全串行，同一时刻总有一块算力在等（论文图2a）</p>
+<p>作者引用的测量显示企业用户 GPU 平均利用率仅 17.6%，94% 的用户低于 50%。此前的并行投机解码系统（PEARL、SwiftSpec、FASER）解决的是调度与放置，编译仍然各自独立——两个模型的共享执行落在编译器的优化边界之外，这就是本文要收复的地盘。</p>
+
+<div class="timeline">
+  <div class="tl-row"><span class="tl-label">传统：串行</span>
+    <div class="tl-track" style="max-width:100%">
+      <div class="seg d" style="width:34%"></div><div class="seg t" style="width:44%"></div><div class="seg d" style="width:22%"></div><div class="seg t" style="width:44%"></div>
+    </div>
+  </div>
+  <div class="tl-row"><span class="tl-label">共调度：跨 batch 重叠</span>
+    <div class="tl-track" style="max-width:100%">
+      <div class="seg d" style="width:30%"></div><div class="seg t" style="width:34%"></div><div class="seg d" style="width:18%"></div><div class="seg t" style="width:34%"></div><div class="seg d" style="width:18%"></div><div class="seg t" style="width:30%"></div>
+    </div>
+  </div>
+  <div class="tl-row"><span class="tl-label">再加交织 kernel</span>
+    <div class="tl-track" style="max-width:100%">
+      <div class="seg d" style="width:26%"></div><div class="seg i" style="width:38%"></div><div class="seg d" style="width:14%"></div><div class="seg i" style="width:38%"></div><div class="seg d" style="width:12%"></div>
+    </div>
+  </div>
+  <div class="tl-legend">
+    <span class="lg"><span class="sw" style="background:var(--draft)"></span>draft 草稿段</span>
+    <span class="lg"><span class="sw" style="background:var(--target)"></span>target 验证段</span>
+    <span class="lg"><span class="sw" style="background:repeating-linear-gradient(135deg, var(--target) 0 5px, var(--draft) 5px 10px)"></span>两模型交织进同一 kernel</span>
+  </div>
+  <p style="margin:10px 0 2px;color:var(--muted);font-size:13.5px">示意（对应论文图2，数据为 Llama-3.2-1B 草稿 + Llama-3.1-8B 目标，γ=4）：单轮 31.3ms → 22.0ms → 19.7ms，最好情况 1.59 倍。</p>
+</div>
+
+<h2><span class="no">02</span>三层设计：共调度 → 联合编译 → 交织算子</h2>
+
+<div class="card">
+  <h3>第一层 · 依赖保持的双流共调度</h3>
+  <p>依赖只在<strong>同一个 batch 内</strong>成立：target 验证第 b 批的草稿前必须等它出完；但 target 验证 b 时，draft 完全可以给第 b+1 批出草稿。于是把两个模型切成更细的段（到层、attention/MLP 半段、单个投影级），放上两条 CUDA stream，只在必要的依赖处插同步事件，整轮捕获成一张 CUDA 图重放，消除发射开销。</p>
+</div>
+
+<div class="card">
+  <h3>第二层 · 以共置执行的实测为准（全文最关键的一条洞见）</h3>
+  <p>单独测得快的 kernel，两个模型一起跑时未必快——它可能加剧资源争用、破坏原本有益的重叠。所以联合优化方案的价值不能分解成单个 kernel 的收益之和：</p>
+  <div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>T</mi><mtext>round</mtext></msub><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo><mtext>  </mtext><mo mathvariant="normal">≠</mo><mtext>  </mtext><msub><mi>T</mi><mtext>round</mtext></msub><mo stretchy="false">(</mo><mi mathvariant="normal">∅</mi><mo stretchy="false">)</mo><mo>−</mo><munder><mo>∑</mo><mrow><mi>g</mi><mo>∈</mo><mi mathvariant="script">G</mi><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo></mrow></munder><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><munder><mo>∑</mo><mrow><msub><mi>o</mi><mi>k</mi></msub><mo>∈</mo><mi>g</mi></mrow></munder><mi>τ</mi><mo stretchy="false">(</mo><msub><mi>o</mi><mi>k</mi></msub><mo stretchy="false">)</mo><mtext>  </mtext><mo>−</mo><mtext>  </mtext><mi>τ</mi><mo stretchy="false">(</mo><mi>g</mi><mo stretchy="false">)</mo><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo></mrow><annotation encoding="application/x-tex">T_{\text{round}}(\theta) \;\neq\; T_{\text{round}}(\varnothing) - \sum_{g \in \mathcal{G}(\theta)} \Big( \sum_{o_k \in g} \tau(o_k) \; - \; \tau(g) \Big)</annotation></semantics></math></div>
+  <p class="formula-note">τ(o) 是算子单独执行的时延，τ(g) 是拼成一个跨模型组后的时延</p>
+  <p>于是优化目标从"每个 kernel 更快"改成"整轮共享执行更快"：</p>
+  <div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msup><mi>θ</mi><mo lspace="0em" rspace="0em">∗</mo></msup><mo>=</mo><mi>arg</mi><mo>⁡</mo><munder><mrow><mi>min</mi><mo>⁡</mo></mrow><mrow><mi>θ</mi><mo>∈</mo><msub><mi mathvariant="normal">Θ</mi><mtext>legal</mtext></msub></mrow></munder><msub><mi>T</mi><mtext>round</mtext></msub><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\theta^{*} = \arg\min_{\theta \in \Theta_{\text{legal}}} T_{\text{round}}(\theta)</annotation></semantics></math></div>
+  <p class="formula-note">每个候选方案都要完整编译、跑通数值校验后按整轮时延打分</p>
+</div>
+
+<div class="card">
+  <h3>第三层 · 跨模型交织 kernel（interleaved kernels）</h3>
+  <p>把两个模型的算子按算术量占比拼进同一次发射：每个 GEMM 成员拆成输出 tile × reduction slice 单元，交织比例直接由各成员的算术量占比决定：</p>
+  <div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>π</mi><mi>k</mi></msub><mo>=</mo><mstyle scriptlevel="0" displaystyle="true"><mfrac><msub><mi>F</mi><mi>k</mi></msub><mrow><munderover><mo>∑</mo><mrow><mi>r</mi><mo>=</mo><mn>1</mn></mrow><msub><mi>K</mi><mi>g</mi></msub></munderover><msub><mi>F</mi><mi>r</mi></msub></mrow></mfrac></mstyle></mrow><annotation encoding="application/x-tex">\pi_k = \dfrac{F_k}{\sum_{r=1}^{K_g} F_r}</annotation></semantics></math></div>
+  <p class="formula-note">F<sub>k</sub> 是成员算子的算术工作量</p>
+  <p>描述符表记录每个单元属于哪个成员、坐标和数据地址，各单元只读写自己的数据，<strong>数学结果不变</strong>。RMSNorm、残差加这类行操作同样支持。Roofline 显示 Llama 下投影两个 kernel 串行合计 17.9 TFLOP/s，交织后 46.5 TFLOP/s（2.6 倍），更贴近带宽屋顶。</p>
+</div>
+
+<h2><span class="no">03</span>谁来搜方案：LLM agent + 蒙特卡洛树搜索</h2>
+<p>联合方案的组合空间太大且每个候选都要编译加实测才能知道好坏，论文把它交给一个自提升循环：agent（GPT-5.6）不直接写 kernel，而是在方案抽象层做 <code>add / merge / split / remove</code> 四种编辑；MCTS 决定下一步细化哪个节点；编译器做静态合法性检查并对每个新交织组设增益门控：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>v</mi><mo stretchy="false">(</mo><mi>g</mi><mo stretchy="false">)</mo><mo>=</mo><mstyle scriptlevel="0" displaystyle="true"><mfrac><mrow><munder><mo>∑</mo><mi>k</mi></munder><mi>τ</mi><mo stretchy="false">(</mo><msub><mi>o</mi><mi>k</mi></msub><mo stretchy="false">)</mo></mrow><mrow><mi>τ</mi><mo stretchy="false">(</mo><mi>g</mi><mo stretchy="false">)</mo></mrow></mfrac></mstyle><mtext>  </mtext><mo>&gt;</mo><mtext>  </mtext><mn>1</mn><mo>+</mo><mi>max</mi><mo>⁡</mo><mo stretchy="false">(</mo><mi>δ</mi><mo separator="true">,</mo><mtext>  </mtext><mi>z</mi><mo>⋅</mo><mi>s</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">v(g) = \dfrac{\sum_{k} \tau(o_k)}{\tau(g)} \; &gt; \; 1 + \max(\delta,\; z \cdot s)</annotation></semantics></math></div>
+<p class="formula-note">门控要求交织组的整体收益显著超过单独 kernel 之和，并考虑测量噪声</p>
+<p>方案被选中后由 MCTS 按置信上界展开：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>θ</mi><mi>t</mi></msub><mo>=</mo><mi>arg</mi><mo>⁡</mo><munder><mrow><mi>max</mi><mo>⁡</mo></mrow><mrow><msup><mi>θ</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup><mo>∈</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">h</mi></mrow><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo></mrow></munder><mrow><mo fence="true">[</mo><mi>Q</mi><mo stretchy="false">(</mo><msup><mi>θ</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup><mo stretchy="false">)</mo><mo>+</mo><mi>β</mi><msqrt><mstyle scriptlevel="0" displaystyle="true"><mfrac><mrow><mi>ln</mi><mo>⁡</mo><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">(</mo><mi>N</mi><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo><mo>+</mo><mn>1</mn><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">)</mo></mrow><mrow><mi>N</mi><mo stretchy="false">(</mo><msup><mi>θ</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup><mo stretchy="false">)</mo></mrow></mfrac></mstyle></msqrt><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\theta_t = \arg\max_{\theta&#x27; \in \mathrm{ch}(\theta)} \left[ Q(\theta&#x27;) + \beta \sqrt{\dfrac{\ln\big(N(\theta)+1\big)}{N(\theta&#x27;)}} \right]</annotation></semantics></math></div>
+<p class="formula-note">N 为访问次数，Q 为归一化的平均回传奖励</p>
+<div class="loop">
+  <div class="node"><b>MCTS 选节点</b><span>决定细化哪个已探索方案</span></div>
+  <div class="arr">→</div>
+  <div class="node"><b>LLM 提出编辑</b><span>基于历史方案、实测分数、kernel 判定和编译器反馈</span></div>
+  <div class="arr">→</div>
+  <div class="node"><b>编译器构建</b><span>合法性检查、调优交织 kernel</span></div>
+  <div class="arr">→</div>
+  <div class="node"><b>GPU 实测整轮</b><span>数值校验通过才计分，奖励回传更新搜索树</span></div>
+</div>
+<p>失败信息（编译拒绝码、未过门控的 kernel 判定）同样回喂给 agent。整轮搜索是<strong>离线编译期</strong>工作，推理时不增加任何运行时开销。</p>
+
+<h2><span class="no">04</span>实测结果</h2>
+<p>6 组单卡配置（B300：Llama-3.1-8B/3.2-1B、Qwen3-14B/0.6B、Qwen3-32B/4B、Llama-3.1-70B/8B；5090：3.2-3B/1B、Qwen3-4B/0.6B），batch=8、输入 1024 token、FP16：</p>
+<div class="bars">
+  <div class="bar-row"><span class="bar-name">Llama-8B / 1B <small>B300</small></span><div class="bar-track"><div class="bar-fill" style="width:79.5%"></div></div><span class="bar-val">1.59×</span></div>
+  <div class="bar-row"><span class="bar-name">Qwen3-14B / 0.6B <small>B300</small></span><div class="bar-track"><div class="bar-fill" style="width:77.5%"></div></div><span class="bar-val">1.55×</span></div>
+  <div class="bar-row"><span class="bar-name">Qwen3-32B / 4B <small>B300</small></span><div class="bar-track"><div class="bar-fill" style="width:71.5%"></div></div><span class="bar-val">1.43×</span></div>
+  <div class="bar-row"><span class="bar-name">Llama-70B / 8B <small>B300</small></span><div class="bar-track"><div class="bar-fill" style="width:67%"></div></div><span class="bar-val">1.34×</span></div>
+  <div class="bar-row"><span class="bar-name">Qwen3-4B / 0.6B <small>5090</small></span><div class="bar-track"><div class="bar-fill" style="width:70.5%"></div></div><span class="bar-val">1.41×</span></div>
+  <div class="bar-row"><span class="bar-name">Llama-3B / 1B <small>5090</small></span><div class="bar-track"><div class="bar-fill" style="width:69%"></div></div><span class="bar-val">1.38×</span></div>
+</div>
+<ul>
+  <li>仅联合编译：6 组配置几何平均 <strong>1.37×</strong>；加交织 kernel 后 <strong>1.45×</strong>，最好情况 <strong>1.59×</strong>。</li>
+  <li>GPU 利用率平均提升 1.46×（5090）/ 1.50×（B300）；Llama 组从 11.6% 提到 18.7%——绝对值仍不高，说明它吃的是碎片余量，不是让卡跑满。</li>
+  <li>敏感性：batch 8→16 时加速从 1.34× 降到 1.22×；草稿长度 γ=4→6 时从 1.55× 降到 1.37×。每个模型自身工作越满，可捡的跨模型余量越小。</li>
+</ul>
+
+<h2><span class="no">05</span>边界与判断</h2>
+<div class="verdict">
+  <div class="card"><h3><span class="tag fact">已确认</span>论文实测范围内成立</h3>
+    <p>单 GPU、batch ≤ 16、输入 1024 token、FP16、静态负载。数值校验要求相对误差 10⁻² 以内，输出保持无损。</p>
+  </div>
+  <div class="card"><h3><span class="tag infer">推断</span>适用场景</h3>
+    <p>低并发、单卡推理（本地部署、端侧）最受益；在线大 batch 服务场景收益递减，1.37× 未必保得住。搜索成本是每次模型组合更换时的一次性离线投入。</p>
+  </div>
+  <div class="card"><h3><span class="tag infer">推断</span>方法论价值大于具体数字</h3>
+    <p>"编译决策以共置执行的实测为准"这条路不限于投机解码，对多模型共卡 serving、agent 驱动编译（KernelBench、STARK 一类）都有借鉴：搜索空间从"单个 kernel 代码"扩到了"跨模型方案组合"。</p>
+  </div>
+</div>
+
+<footer>
+  <p><strong>术语</strong>：draft / target —— 草稿 / 目标模型；γ —— 每轮草稿长度；交织 kernel —— 把多个算子的数据块拼进一次 kernel 发射；MCTS —— 蒙特卡洛树搜索；Roofline —— 以算力/带宽上限为参考的性能分析。</p>
+  <p><strong>来源</strong>：Tang et al., <em>Conjugate Compilation: Self-Improving Agentic Co-Compilation for Speculative Decoding</em>, arXiv:2610.25012（2026-10-18 提交）。本页数字均取自论文正文与图 2、图 4-8。</p>
+</footer>
+
+</div>
+</body>
+</html>
