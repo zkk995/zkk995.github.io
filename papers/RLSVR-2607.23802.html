@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RLSVR 论文解读：给开放任务造一个“自验证”的奖励</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.kicker{color:var(--muted);font-size:14px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;overflow-x:auto}
+.formula math{font-size:1.05em}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.scroll{overflow-x:auto}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 180px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+.gamebox{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}
+.gcard{flex:1 1 260px;border-radius:12px;padding:14px 16px;font-size:14.5px;border:1px solid var(--line)}
+.gcard.civ{background:var(--greenbg)}
+.gcard.spy{background:var(--orangebg)}
+.gcard h4{margin:0 0 6px;font-size:15px}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body data-visualization-style="knowledge-technology">
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">COLM 2026</span><span class="tag">RL · 自我改进</span><span class="tag">多智能体自博弈</span>
+<h1>RLSVR：给开放任务造一个“自验证”的奖励</h1>
+<p class="meta">From RLVR to RLSVR: Task Transformation Induces Self-Verifiable Rewards for Open-Ended LLM Self-Improvement<br>
+Qinsi Wang 等 · Duke / Adobe / OSU / PSU / NUS / Amazon · arXiv:2607.23802 · 代码已开源</p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>RLVR 的可验证奖励只能用在数学、代码这类“有标准答案”的领域；这篇论文借鉴自监督学习“造代理任务”的思路，把开放任务（摘要、写作）改造成一个<strong>“谁是卧底”式的多智能体游戏</strong>——卧底身份由环境内定，投票结果天然可验证，而谁被怀疑又取决于输出质量，于是开放任务的“写得好不好”第一次有了免费、无限量、无偏的奖励信号。</div>
+
+<section>
+<h2>1 · 问题：RLVR 卡在“可验证”这一步</h2>
+<p>RLVR（可验证奖励强化学习）撑起了 o1、DeepSeek-R1 这批推理模型：奖励由确定性校验器给出——答案对不对、单测过不过，0 或 1，干净、便宜、无限量。形式化地：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><munder><mrow><mi>max</mi><mo>⁡</mo></mrow><mi>θ</mi></munder><mtext>  </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mi>x</mi><mo>∼</mo><mi mathvariant="script">D</mi><mo separator="true">,</mo><mtext>  </mtext><mi>y</mi><mo>∼</mo><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><mi>x</mi><mo separator="true">,</mo><mi>τ</mi><mo stretchy="false">)</mo></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">[</mo><mi>V</mi><mo stretchy="false">(</mo><mi>x</mi><mo separator="true">,</mo><mi>y</mi><mo stretchy="false">)</mo><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">]</mo></mrow><annotation encoding="application/x-tex">\max_{\theta}\;\mathbb{E}_{x\sim\mathcal{D},\;y\sim\pi_{\theta}(\cdot\mid x,\tau)}\big[V(x,y)\big]</annotation></semantics></math></div>
+<p class="note">V(x,y)∈{0,1} 是确定性校验器；Q(x,y) 则是摘要、写作这类任务背后“客观存在但无法验证”的质量函数。</p>
+<p>一旦离开数学/代码，就没有 V 可用。现有补法各有硬伤：RLHF/DPO 依赖人类偏好（贵、有偏）；LLM-as-a-Judge 和 reward model 把策略上限<strong>卡死在裁判模型的能力</strong>，还让每次 rollout 多一笔推理开销。作者的诊断：这些方法都在试图<strong>直接逼近不可验证的 Q</strong>，方向错了。</p>
+<h3>换个思路：像自监督学习那样“改造任务”</h3>
+<p>自监督学习（SSL）面对没标签的数据，不是去造标签，而是构造代理任务（pretext task，如掩码重建、对比学习），让监督信号<strong>从数据本身自动长出来</strong>。RLSVR 把这套“任务变换”哲学搬进 RL：与其逼近 Q，不如把任务改造成一个奖励天然可验证的代理环境。</p>
+</section>
+
+<section>
+<h2>2 · RLSVR 范式：四步把开放任务变“可验证”</h2>
+<div class="flow">
+<div class="step"><b>① 潜变量注入</b><br>环境采样输入 x，同时抽一个隐变量 z 并记录为“标准答案”（哪段被掩了、哪个条件下生成等），绝不告诉策略。</div>
+<div class="step"><b>② 条件执行</b><br>按 (x,z) 构造观察 o，策略在 o 上做<strong>原封不动的目标任务</strong>——保证练的还是目标能力。</div>
+<div class="step"><b>③ 可验证交互</b><br>环境就 z 提问，且“答对与否取决于②的输出质量”——这是设计的关键约束。</div>
+<div class="step"><b>④ 规则奖励</b><br>对照环境记录的 z 核对交互结果，直接算奖励 R，无人工、无裁判模型。</div>
+</div>
+<p>称之为<strong>self-verifiable</strong>：真值由环境“内定”，任何关于它的预测都能被精确核对——和数学校验器核对最终答案一模一样。RLSVR 就是“RLVR 版的自监督学习”：Φ 相当于 pretext task，z 相当于自动生成的标签，GRPO 等现成 RLVR 机器直接开进来。</p>
+</section>
+
+<section>
+<h2>3 · SpyRL：用“谁是卧底”实例化 RLSVR</h2>
+<p>SpyRL（Self-PlaY RL）把开放任务变成 n 人一局的《谁是卧底》。每局随机指定一名卧底：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>u</mi><mo>∼</mo><mrow><mi mathvariant="normal">U</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">f</mi></mrow><mo stretchy="false">(</mo><mo stretchy="false">{</mo><mn>1</mn><mo separator="true">,</mo><mo>…</mo><mo separator="true">,</mo><mi>n</mi><mo stretchy="false">}</mo><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">u\sim\mathrm{Unif}(\{1,\dots,n\})</annotation></semantics></math></div>
+<div class="gamebox">
+<div class="gcard civ"><h4>🟢 平民（n−1 人）</h4>拿到<strong>完整输入</strong> x，正常完成任务（写摘要、写故事、出数学题并求解）。</div>
+<div class="gcard spy"><h4>🟠 卧底（1 人）</h4>只拿到<strong>降级输入</strong> g(x)（连续片段掩码），缺了关键信息却要装作一切正常。掩码只藏“完成任务必需的信息”，风格、长度、主题保持一致，防止裁判走表面捷径。</div>
+</div>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>o</mi><mi>i</mi></msub><mo>=</mo><mrow><mo fence="true">{</mo><mtable rowspacing="0.36em" columnalign="left left" columnspacing="1em"><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mrow><mi>x</mi><mo separator="true">,</mo></mrow></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mrow><mi>i</mi><mo mathvariant="normal">≠</mo><mi>u</mi></mrow></mstyle></mtd></mtr><mtr><mtd><mstyle scriptlevel="0" displaystyle="false"><mrow><mi>g</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo separator="true">,</mo></mrow></mstyle></mtd><mtd><mstyle scriptlevel="0" displaystyle="false"><mrow><mi>i</mi><mo>=</mo><mi>u</mi></mrow></mstyle></mtd></mtr></mtable></mrow></mrow><annotation encoding="application/x-tex">o_{i}=\begin{cases}x,&amp;i\neq u\\ g(x),&amp;i=u\end{cases}</annotation></semantics></math></div>
+<p>所有人用同一个执行策略 π<sup>P</sup> 在各自观察上完成任务，然后进入<strong>检测阶段</strong>：互相看输出、投票揪卧底。</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>y</mi><mi>i</mi></msub><mo>∼</mo><msubsup><mi>π</mi><mi>θ</mi><mi>P</mi></msubsup><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><msub><mi>o</mi><mi>i</mi></msub><mo separator="true">,</mo><mi>τ</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">y_{i}\sim\pi_{\theta}^{P}(\cdot\mid o_{i},\tau)</annotation></semantics></math></div>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>v</mi><mi>i</mi></msub><mo>∼</mo><msubsup><mi>π</mi><mi>ϕ</mi><mi>D</mi></msubsup><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><msub><mi>s</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mi>v</mi><mi>i</mi></msub><mo>∈</mo><mo stretchy="false">{</mo><mn>1</mn><mo separator="true">,</mo><mo>…</mo><mo separator="true">,</mo><mi>n</mi><mo stretchy="false">}</mo></mrow><annotation encoding="application/x-tex">v_{i}\sim\pi_{\phi}^{D}(\cdot\mid s_{i}),\qquad v_{i}\in\{1,\dots,n\}</annotation></semantics></math></div>
+<p>检测奖励极简单——卧底身份是环境定的，指对了就是 1：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>r</mi><mi>i</mi><mi>D</mi></msubsup><mo>=</mo><mi mathvariant="double-struck">I</mi><mo stretchy="false">[</mo><msub><mi>v</mi><mi>i</mi></msub><mo>=</mo><mi>u</mi><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">r_{i}^{D}=\mathbb{I}[v_{i}=u]</annotation></semantics></math></div>
+<h3>组内归一化优势（GRPO 式）</h3>
+<p>n 个检测奖励做组内标准化，免 critic、低方差；而且判断是<strong>集体投票</strong>，单人误判会被别人的票数抵消，不主导优化方向：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>μ</mi><mi>D</mi></msub><mo>=</mo><mfrac><mn>1</mn><mi>n</mi></mfrac><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msubsup><mi>r</mi><mi>i</mi><mi>D</mi></msubsup><mo separator="true">,</mo><mspace width="2em"/><msub><mi>σ</mi><mi>D</mi></msub><mo>=</mo><msqrt><mrow><mfrac><mn>1</mn><mi>n</mi></mfrac><munderover><mo>∑</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>n</mi></munderover><msup><mrow><mo fence="true">(</mo><msubsup><mi>r</mi><mi>i</mi><mi>D</mi></msubsup><mo>−</mo><msub><mi>μ</mi><mi>D</mi></msub><mo fence="true">)</mo></mrow><mn>2</mn></msup></mrow></msqrt><mo separator="true">,</mo><mspace width="2em"/><msubsup><mi>A</mi><mi>i</mi><mi>D</mi></msubsup><mo>=</mo><mfrac><mrow><msubsup><mi>r</mi><mi>i</mi><mi>D</mi></msubsup><mo>−</mo><msub><mi>μ</mi><mi>D</mi></msub></mrow><mrow><msub><mi>σ</mi><mi>D</mi></msub><mo>+</mo><mi>ϵ</mi></mrow></mfrac></mrow><annotation encoding="application/x-tex">\mu_{D}=\frac{1}{n}\sum_{i=1}^{n}r_{i}^{D},\qquad \sigma_{D}=\sqrt{\frac{1}{n}\sum_{i=1}^{n}\left(r_{i}^{D}-\mu_{D}\right)^{2}},\qquad A_{i}^{D}=\frac{r_{i}^{D}-\mu_{D}}{\sigma_{D}+\epsilon}</annotation></semantics></math></div>
+<h3>执行阶段的零和奖励：得票越少越好</h3>
+<p>卧底 m<sub>u</sub> 票、平民各 m<sub>c_j</sub> 票，奖励设计成零和竞争：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>r</mi><mi>u</mi><mi>P</mi></msubsup><mo>=</mo><mo>−</mo><mi>β</mi><mrow><mo fence="true">(</mo><msub><mi>m</mi><mi>u</mi></msub><mo>−</mo><msub><mover accent="true"><mi>m</mi><mo>ˉ</mo></mover><mi>c</mi></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">r_{u}^{P}=-\beta\left(m_{u}-\bar{m}_{c}\right)</annotation></semantics></math></div>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>r</mi><msub><mi>c</mi><mi>j</mi></msub><mi>P</mi></msubsup><mo>=</mo><mfrac><mi>β</mi><msub><mi>n</mi><mi>c</mi></msub></mfrac><mrow><mo fence="true">(</mo><msub><mi>m</mi><mi>u</mi></msub><mo>−</mo><msub><mover accent="true"><mi>m</mi><mo>ˉ</mo></mover><mi>c</mi></msub><mo fence="true">)</mo></mrow><mo>−</mo><mi>λ</mi><mrow><mo fence="true">(</mo><msub><mi>m</mi><msub><mi>c</mi><mi>j</mi></msub></msub><mo>−</mo><msub><mover accent="true"><mi>m</mi><mo>ˉ</mo></mover><mi>c</mi></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">r_{c_{j}}^{P}=\frac{\beta}{n_{c}}\left(m_{u}-\bar{m}_{c}\right)-\lambda\left(m_{c_{j}}-\bar{m}_{c}\right)</annotation></semantics></math></div>
+<ul>
+<li><strong>零和约束</strong>：卧底与平民的总奖励恒为 0，双方在对抗中持续共进化；</li>
+<li><strong>组内竞争</strong>：平民中谁被怀疑得明显更多，谁罚得更重——模型学的不是“绝对质量分”，而是<strong>在同等信息下比别人更有说服力</strong>。</li>
+</ul>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>r</mi><mi>u</mi><mi>P</mi></msubsup><mo>+</mo><munderover><mo>∑</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><msub><mi>n</mi><mi>c</mi></msub></munderover><msubsup><mi>r</mi><msub><mi>c</mi><mi>j</mi></msub><mi>P</mi></msubsup><mo>=</mo><mn>0</mn></mrow><annotation encoding="application/x-tex">r_{u}^{P}+\sum_{j=1}^{n_{c}}r_{c_{j}}^{P}=0</annotation></semantics></math></div>
+<p>因卧底/平民面对的任务难度天然不对称，优化时用 RAE（Role-Advantage Estimation）按角色校准基线；两阶段交替更新（一次只动执行策略或检测策略之一），GRPO 式 clip 目标加 KL 正则防漂移：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msup><mi mathvariant="script">L</mi><mi>P</mi></msup><mo stretchy="false">(</mo><mi>θ</mi><mo stretchy="false">)</mo><mo>=</mo><mo>−</mo><mtext> </mtext><mi mathvariant="double-struck">E</mi><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">[</mo><mfrac><mn>1</mn><mi>n</mi></mfrac><munder><mo>∑</mo><mrow><mi>k</mi><mo>∈</mo><mo stretchy="false">{</mo><mi>u</mi><mo stretchy="false">}</mo><mo>∪</mo><mi mathvariant="script">C</mi></mrow></munder><munder><mo>∑</mo><mi>t</mi></munder><mi>min</mi><mo>⁡</mo><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">(</mo><msubsup><mi>ρ</mi><mrow><mi>k</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>P</mi></msubsup><msubsup><mi>A</mi><mi>k</mi><mi>P</mi></msubsup><mo separator="true">,</mo><mtext>  </mtext><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">p</mi></mrow><mo stretchy="false">(</mo><msubsup><mi>ρ</mi><mrow><mi>k</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>P</mi></msubsup><mo separator="true">,</mo><mn>1</mn><mo>−</mo><mi>ε</mi><mo separator="true">,</mo><mn>1</mn><mo>+</mo><mi>ε</mi><mo stretchy="false">)</mo><msubsup><mi>A</mi><mi>k</mi><mi>P</mi></msubsup><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">)</mo><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">]</mo><mo>+</mo><mi>α</mi><mtext> </mtext><msub><mi mathvariant="double-struck">D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><msubsup><mi>π</mi><mi>θ</mi><mi>P</mi></msubsup><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><msub><mi>π</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi></mrow></msub><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}^{P}(\theta)=-\,\mathbb{E}\Big[\frac{1}{n}\sum_{k\in\{u\}\cup\mathcal{C}}\sum_{t}\min\big(\rho_{k,t}^{P}A_{k}^{P},\;\mathrm{clip}(\rho_{k,t}^{P},1-\varepsilon,1+\varepsilon)A_{k}^{P}\big)\Big]+\alpha\,\mathbb{D}_{\mathrm{KL}}\!\left[\pi_{\theta}^{P}\,\|\,\pi_{\mathrm{ref}}\right]</annotation></semantics></math></div>
+</section>
+
+<section>
+<h2>4 · 实验结果</h2>
+<p>训练设置：Qwen3-4B/8B 骨干，组大小 n=5，100 epochs，批次 1024，最大生成 2048 token。三个领域：GovReport 摘要（掩码 20%）、WritingPrompts 创作（掩码 20%）、Nemotron-CC-Math 数学（掩码 40%）。基线为 R-Zero 和 Absolute Zero 两个 SOTA 自博弈框架。</p>
+
+<h3>摘要任务（ROUGE-L，GovReport）</h3>
+<div class="scroll"><table><thead><tr><th>方法</th><th>Qwen3-4B</th><th>Qwen3-8B</th></tr></thead><tbody><tr><td>基础模型</td><td>30.2</td><td class="hl">29.0</td></tr><tr><td>+ R-Zero</td><td>32.1</td><td class="hl">29.4</td></tr><tr><td>+ Absolute Zero</td><td>33.2</td><td class="hl">32.5</td></tr><tr><td>+ SpyRL</td><td>36.7</td><td class="hl">34.1</td></tr></tbody></table></div>
+<p class="note">五个摘要基准（GovReport/Multi-News/QmSum/VcSum/SamSum）上 SpyRL 的 ROUGE-L 全部第一；GPT-4o 成对对比 30 格中全部赢多数。</p>
+
+<h3>数学推理（准确率 %）</h3>
+<div class="scroll"><table><thead><tr><th>方法</th><th>GSM8K</th><th>Math500</th><th>AIME 24</th><th>AIME 25</th><th>GPQA-D</th></tr></thead><tbody><tr><td>Qwen3-4B</td><td>84.5</td><td>68.2</td><td>10.3</td><td>6.7</td><td class="hl">26.3</td></tr><tr><td>+ Absolute Zero</td><td>89.3</td><td>76.2</td><td>12.2</td><td>13.4</td><td class="hl">35.3</td></tr><tr><td>+ SpyRL</td><td>93.4</td><td>79.5</td><td>13.3</td><td>20.0</td><td class="hl">41.3</td></tr><tr><td>Qwen3-8B</td><td>91.8</td><td>74.2</td><td>15.3</td><td>12.1</td><td class="hl">33.3</td></tr><tr><td>+ SpyRL</td><td>93.5</td><td>81.2</td><td>20.0</td><td>23.3</td><td class="hl">39.8</td></tr></tbody></table></div>
+<p class="note">本该“需要外部校验器”的数学任务上 SpyRL 同样领先——游戏内练出的推理能力照样迁移。</p>
+
+<h3>关键验证：票数真的等于质量吗？</h3>
+<p>对 100 局游戏统计：被投更多怀疑票的玩家，其输出在 GPT-4o 质量排名中系统性更差——<strong>卧底票数与输出质量强相关</strong>，即这套自验证奖励确实对齐了真实任务质量，而且完全不需要裁判模型。人类评审结果与 GPT-4o 评审方向一致。</p>
+
+<h3>消融：哪个部件不能少</h3>
+<ul>
+<li><strong>RAE 角色校准</strong>：去掉后七基准平均从 50.4 跌到 37.5，甚至低于不训练——卧底的信息劣势会污染优势估计，校准必不可少；</li>
+<li><strong>交替训练</strong>：只训执行阶段会因检测器冻结而奖励失真、平台期震荡；只训检测阶段几乎无迁移收益；</li>
+<li><strong>卧底机制</strong>：去掉后初期有提升但很快停滞——没有对抗信号，检测器无法与执行者共同进化；</li>
+<li><strong>组大小</strong>：3→5 边际收益最大（平均 5.5→9.3），6–8 人趋平，n=5 够用；</li>
+<li><strong>掩码比例</strong>：20% 与 40% 结果相近，方法对 g(·) 的具体强度不敏感。</li>
+</ul>
+</section>
+
+<section>
+<h2>5 · 这篇论文真正说了什么</h2>
+<ul>
+<li><strong>可验证性不是任务的固有属性，而是可以被工程“构造”出来</strong>——这是比 SpyRL 本身更普适的结论：只要能把任务改造成“环境内定真值 + 交互结果可精确核对”的形式，就能白嫖 RLVR 的全部红利；</li>
+<li>奖励信号的本质转换：<em>“输出质量”</em>（不可验证）→ <em>“谁的输出暴露了信息劣势”</em>（可验证），身份推断成了质量代理；</li>
+<li>集体投票天然抗单点裁判偏差，且裁判随训练共同进化，避免了 LLM-as-a-Judge 的静态能力天花板；</li>
+<li>清醒的边界：数学模型往写作任务迁移是<strong>负迁移</strong>（能力重叠少）；方法依赖“能设计出合理的降级算子 g(·)”，对没有天然信息结构的任务怎么改造，仍是开放问题。</li>
+</ul>
+<p>论文：<a href="https://arxiv.org/abs/2607.23802">arXiv:2607.23802</a> · 代码：<a href="https://github.com/wangqinsi1/RLSVR/tree/SpyRL">github.com/wangqinsi1/RLSVR</a></p>
+</section>
+
+<footer>依据论文 arXiv:2607.23802v2（COLM 2026）正文与附录整理；公式为原文式 (1)–(6) 及优化目标的渲染。页面生成于 2026-10-23。</footer>
+
+</div>
+</body>
+</html>
