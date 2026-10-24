@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ThinkingBox-Training 解读：把数据库终态校验直接变成 Agent 的 RL 奖励</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;overflow-x:auto}
+.formula math{font-size:1.05em}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.scroll{overflow-x:auto}
+.quotebox{border-left:4px solid var(--blue);background:var(--bluebg);border-radius:0 10px 10px 0;padding:12px 16px;margin:14px 0;font-size:15px}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body data-visualization-style="knowledge-technology">
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">Microsoft × Hugging Face</span><span class="tag">Agent 后训练</span><span class="tag">GRPO</span><span class="tag">完整开源</span>
+<h1>ThinkingBox-Training 解读：把数据库终态校验直接变成 Agent 的 RL 奖励</h1>
+<div class="meta">基准论文 <a href="https://arxiv.org/abs/2608.19741" target="_blank" rel="noopener">arXiv:2608.19741</a> · 训练代码 <a href="https://github.com/microsoft/thinkingbox-training" target="_blank" rel="noopener">github.com/microsoft/thinkingbox-training</a> · 官方博客 <a href="https://huggingface.co/blog/microsoft/thinkingbox-training" target="_blank" rel="noopener">Turning Database Grading into RL Rewards</a></div>
+</header>
+
+<div class="oneline">一句话：微软和 Hugging Face 把 ThinkingBox 基准里那套"检查数据库最终状态"的可执行判分，原封不动拿来当 RL 的奖励函数，对 Qwen3.8-27B 只跑了 50 步 GRPO，在完全没见过的 507 个基准任务上 pass@1 从 51.70% 涨到 60.78%，20 次尝试全部成功的任务从 38 个涨到 107 个（7.50% → 21.10%，接近 3 倍）——代价是"至少成功过一次"的任务略降。作者把这次后训练概括为：模型变得<strong>更可靠，而不是更广</strong>。</div>
+
+<section>
+<h2>一、背景：Agent 常常"说做完了"，但数据库不同意</h2>
+<p>ThinkingBox 是微软此前发布的 Agent 沙箱与基准（arXiv:2608.19741）。它包含 507 个合成的有状态业务工作流，覆盖零售、酒店差旅、车险理赔、新型银行内部 IT、咨询公司 IT/HR 五个领域。每个任务自带：初始数据库状态、用户目标、业务政策、一组 MCP 工具，以及<strong>对最终数据库状态的可执行检查</strong>。判分不看 Agent 说了什么、调用了什么工具，只看它干完活之后数据库里留下的记录对不对：该改的字段改了吗？要求的副作用都发生了吗？有没有多改不该改的？</p>
+<p>这套判分揭穿了一个普遍现象：很多失败尝试在过程层面完全"干净"——工具调用合法、最后没有报错、体面收尾，但数据库状态是错的。在 12 万余次跨模型实验中，被可执行检查拒绝的失败里约 67% 依然是干净收尾。更扎心的是可靠性的缺口：最强的模型 pass@1 有 65.36%，但 20 次独立尝试全部成功的任务只占 25.25%；Kimi-K3 一次性能解决 93.89% 的任务，20 次全过的却只有 13% 左右。一次成功和可靠完成之间，隔着一条大峡谷。</p>
+<p>这篇 ThinkingBox-Training 的新工作出发点很自然：<strong>既然这套可执行检查足够硬、足够确定，为什么不直接把它当奖励函数？</strong></p>
+</section>
+
+<section>
+<h2>二、核心做法：环境就是判分器，判分器就是奖励</h2>
+<p>训练循环和评测循环几乎共享同一套机制：给 Agent 一个隔离的 MCP 工具会话和一个模拟用户，让它自己干，干完之后跑终态检查。检查通过，奖励为 1；不通过，奖励为 0。绝大多数任务用的是确定性的数据库断言，<strong>不看轨迹、不看措辞、不需要 LLM 打分</strong>；只有少数任务里的窄要求（比如最终回复必须包含某类信息）交给一个只回答二元问题的 LLM judge。</p>
+<p>奖励是稀疏的 0/1 结果奖励，组内做归一化得到优势，这正是 GRPO 的标准用法：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>A</mi><mo>^</mo></mover><mi>i</mi></msub><mtext>  </mtext><mo>=</mo><mtext>  </mtext><mfrac><mrow><msub><mi>r</mi><mi>i</mi></msub><mo>−</mo><mi mathvariant="normal">mean</mi><mo>⁡</mo><mo stretchy="false">(</mo><mo stretchy="false">{</mo><msub><mi>r</mi><mi>j</mi></msub><msubsup><mo stretchy="false">}</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mi>G</mi></msubsup><mo stretchy="false">)</mo></mrow><mrow><mi mathvariant="normal">std</mi><mo>⁡</mo><mo stretchy="false">(</mo><mo stretchy="false">{</mo><msub><mi>r</mi><mi>j</mi></msub><msubsup><mo stretchy="false">}</mo><mrow><mi>j</mi><mo>=</mo><mn>1</mn></mrow><mi>G</mi></msubsup><mo stretchy="false">)</mo></mrow></mfrac></mrow><annotation encoding="application/x-tex">\hat A_i \;=\; \frac{r_i - \operatorname{mean}(\{r_j\}_{j=1}^{G})}{\operatorname{std}(\{r_j\}_{j=1}^{G})}</annotation></semantics></math></div>
+<p class="note">其中 <em>r</em><sub>i</sub> 是同一条任务上第 i 条 rollout 的终态检查结果（0 或 1），G 为组内 rollout 数。全对或全错的组没有梯度信号，会被丢弃并重填。</p>
+<h3>训练任务池：先探测，再筛选</h3>
+<p>训练池在 ThinkingBox-Bench 之外按同样格式构造（领域、数据库、大部分工具与基准不重叠，基准相当于分布外测试集）。构造时先用基座模型对每个候选任务做探测：<strong>总是失败和总是成功的任务都丢掉</strong>——因为 GRPO 只能从"组内有成功也有失败"的混合结果里学到东西。筛完剩下 187 个任务。这个池子没有公开，仓库里只放了一份演示接口的公开样例列表，这是想复现的朋友要注意的一点。</p>
+<h3>训练配置（参考运行）</h3>
+<ul>
+<li>模型：Qwen3.8-27B，全参数 RL 微调，基于 Verl 0.9.0</li>
+<li>50 步 GRPO，每步 18 组 × 8 条 rollout，共 144 个 episode</li>
+<li>24 张 H100（3 节点），AdamW 学习率 1e-6，零权重衰减</li>
+<li>零方差组按 DAPO 风格丢弃重填；后端超时等系统错误导致的组也重填，避免把基础设施故障当成模型失败</li>
+<li>训练与评测共用同一套输出解析代码（tb_interpret.py），确保 reasoning 提取、工具调用、参数类型、渲染与状态隔离完全一致——否则奖励衡量的 Agent 和评测的 Agent 就不是同一个</li>
+</ul>
+</section>
+
+<section>
+<h2>三、结果：锐化，而非拓宽</h2>
+<p>在 507 个从未参与训练的基准任务上，每个任务跑 20 次：</p>
+<div class="scroll">
+<table>
+<tr><th>指标</th><th>训练前</th><th>训练后</th><th>变化</th></tr>
+<tr><td>pass@1（平均单次成功率）</td><td>51.70%</td><td>60.78%</td><td>+9.08pp</td></tr>
+<tr class="hl"><td>20 次全部成功的任务数</td><td>38（7.50%）</td><td>107（21.10%）</td><td>接近 3 倍</td></tr>
+<tr><td>pass@20（至少成功一次）</td><td>453（89.35%）</td><td>446（87.97%）</td><td>−7 个任务</td></tr>
+<tr><td>每个 20/20 稳定完成任务的成本（估算）</td><td>$24.36</td><td>$8.00</td><td>约 −67%</td></tr>
+<tr><td>每次成功尝试的成本（估算）</td><td>$0.177</td><td>$0.139</td><td>−21.4%</td></tr>
+</table>
+</div>
+<p class="note">成本按官方统一的公开牌价法估算，是横向比较用的研究口径，不是账单，且不含训练本身的成本。</p>
+<p>分领域看，pass@1 和 20/20 全过率在五个领域全部上升，retail 的 20/20 全过率涨幅最大（+24.5pp）；pass@20 则有升有降，auto insurance 降幅最大（−7.0pp）。也就是说，模型确实变可靠了，但可靠性是用覆盖广度的一点点收缩换来的。和闭源模型比口径更明显：GPT-5.6 Sol 的 pass@1 是 61.91%，略高于微调后的 Qwen3.8-27B，但 20 次全过的任务只有 82 个，低于后者的 107 个——单次排行榜看不出来的差距，可靠性口径下露出来了。</p>
+<h3>一个直观的例子</h3>
+<div class="quotebox">企业酒店预订任务要求：降级房间必须先拿到经理批准。训练前的模型 20 次里有 15 次跳过审批、擅自改单退款，过程看起来毫无破绽；训练后的模型 20 次全部保留了预订与支付状态，等到了该走的审批。</div>
+</section>
+
+<section>
+<h2>四、作者给从业者的三条建议</h2>
+<ul>
+<li><strong>训练前先探测</strong>：画出任务难度分布直方图，实际分布通常比想象中更偏；大量任务对基座模型要么太简单要么不可能，直接进池子只会浪费算力。</li>
+<li><strong>核对训练/评测解析器一致性</strong>：把同一条模型输出分别用两边代码重放，确认提取出的工具名和参数完全一样。</li>
+<li><strong>同时汇报覆盖率与可重复率</strong>：只报 pass@1 会系统性高估 Agent 的可用性，pass@1 旁边应当放一个明确定义的重复成功率指标。</li>
+</ul>
+</section>
+
+<section>
+<h2>五、我的解读：这篇真正值得学的是什么</h2>
+<p><strong>1. "环境即奖励"这条路被完整走通了。</strong>Agent RL 一直卡在奖励从哪来：过程奖励容易被钻空子，LLM judge 有噪声、有成本，自己造奖励模型又有奖励破解的风险。ThinkingBox 的答案是——如果你的任务本身能定义"什么算干完"，那就把验收标准写成可执行检查，评测和训练共用。整个链路没有一步需要人工标注轨迹，奖励信号却几乎不可欺骗（除非真的把数据库改对）。对任何有明确终态的业务场景（工单、订单、审批、配置变更），这个模式可以直接抄。</p>
+<p><strong>2. "可靠性"被当成一等公民指标。</strong>单次成功不等于可用，20 次全过才是。这个口径下甚至出现了微调后的 27B 开源模型比 pass@1 更高的闭源模型更可靠的局面。做 Agent 落地的人应该把这个指标带进自己的评测体系。</p>
+<p><strong>3. 也要看到没说的部分。</strong>训练池只有 187 个任务却带来了这么大的迁移涨幅，令人惊喜，但基准和训练池共享同一套框架、模拟用户机制和判分风格，作者自己也承认这限制了迁移结论的强度；任务全部是合成重建，离真实生产的脏数据还有距离。另外 pass@20 的整体略降说明结果奖励 RL 的老问题还在：模型在收敛到"稳妥做法"，一些原本碰运气能碰对的路径被放弃了。锐化和拓宽之间的这个交换比，是后续工作真正要优化的东西。</p>
+<p><strong>4. 复现门槛是真实的。</strong>参考运行要 24 张 H100，环境要 Linux、Python 3.12、Docker 加一串本地服务，训练池私有。把它当"方法参照"很完整，当"现成配方"还差一截。</p>
+</section>
+
+<footer>
+相关链接：<a href="https://arxiv.org/abs/2608.19741" target="_blank" rel="noopener">论文 arXiv:2608.19741</a> · <a href="https://github.com/microsoft/thinkingbox-training" target="_blank" rel="noopener">训练代码</a> · <a href="https://github.com/microsoft/thinkingbox" target="_blank" rel="noopener">ThinkingBox 框架</a> · <a href="https://huggingface.co/blog/microsoft/thinkingbox-training" target="_blank" rel="noopener">官方博客（训练篇）</a> · <a href="https://huggingface.co/blog/microsoft/thinkingbox" target="_blank" rel="noopener">官方博客（基准篇）</a><br>
+本页为个人论文解读，数字均引自作者报告；文中估算成本为官方统一口径，非实际账单。
+</footer>
+
+</div>
+</body>
+</html>

@@ -2,6 +2,11 @@
   "updated": "2026-10-24",
   "papers": [
     {
+      "file": "papers/thinkingbox-training.html",
+      "title": "ThinkingBox-Training 解读：把数据库终态校验变成 Agent 的 RL 奖励",
+      "arxiv": "2608.19741"
+    },
+    {
       "file": "papers/RLSVR-2607.23802.html",
       "title": "RLSVR 论文解读：给开放任务造一个“自验证”的奖励",
       "arxiv": "2607.23802"
