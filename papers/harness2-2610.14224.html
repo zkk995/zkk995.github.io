@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harness² 论文解读：让 Agent 自己改好"外挂"，不用改模型</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.kicker{color:var(--muted);font-size:14px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+code{background:#eef1f5;border-radius:4px;padding:0 5px;font-size:14px}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 180px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13px;margin-top:26px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div><span class="tag">arXiv:2610.14224</span><span class="tag">Google Cloud AI Research</span><span class="tag">开源 Apache-2.0</span><span class="tag">Agent · RSI</span></div>
+<h1>Harness<sup>2</sup> 论文解读：让 Agent 自己改好"外挂"，不动模型权重</h1>
+<div class="meta">论文：Harness^2: Recursive Agent Harnessing for an Open World（2026-10-09 提交， Northwestern + Google Cloud AI Research）｜代码：github.com/google-research/harness2（19.1k stars）｜项目主页：harness2.github.io</div>
+</header>
+
+<div class="oneline">核心一句话：<strong>Agent 的强弱不只取决于模型，还取决于模型外面那层"外挂"（harness：提示词、工具、记忆、技能、编排）；Harness<sup>2</sup> 让 Agent 在真实任务里自己改这层外挂——用同一任务上不同执行版本的"行为对比"来判断改动好坏（不需要标准答案），再把改成功的部分沉淀成经验库，供以后的任务复用。GLM-5 接入后 WorkBuddy-Bench 平均分 64.2→75.7（+11.5，单步最大增益），直接反超原生 Gemini 3.5 Flash 的 72.4。</strong></div>
+
+<section>
+<h2>1. 背景：改模型太贵，改外挂更划算</h2>
+<p>一个 LLM Agent 的能力 = 模型 + harness。模型是发动机，harness 是传动、仪表和驾驶规则——你日常手调的 <code>CLAUDE.md</code>、<code>AGENTS.md</code>、MCP 工具清单、技能库、子 agent 编排，全都是 harness 的一部分。同一颗模型，harness 调得好坏能拉开十几分。</p>
+<p>递归自我改进（RSI）想让 AI 改进 AI，此前两条路：①改模型权重（self-rewarding LM）；②改模型外围的代码/提示词（Darwin Gödel Machine、STOP 等）。但开放世界任务有个死结：<strong>没有标准答案</strong>——改完外挂后怎么知道改坏了没有？ Harness<sup>2</sup> 给出了新解法：不问"对不对"，只问"改完之后行为有没有变好"。</p>
+</section>
+
+<section>
+<h2>2. 方法：双层递归，行为对比代替标准答案</h2>
+<h3>双层递归结构</h3>
+<div class="flow">
+<div class="step"><b>① 任务级递归</b><br>为当前任务现场改 harness：提出候选改动 → 各跑一次真实执行 → 对比行为差异 → 组装出改进版。支持并行（k 个候选）或串行（k 步链式）两种形式。</div>
+<div class="step"><b>② 改进级递归</b><br>任务做完后复盘整个改进过程：哪些改动真的帮了忙、什么条件下有效，沉淀成"改进经验库"，指导未来任务的 harness 编辑。</div>
+</div>
+<h3>Propose–Probe–Compose：没有标准答案时的判断力</h3>
+<p>这是全文最关键的一步。开放任务没有 ground-truth 验证器，Harness<sup>2</sup> 用<strong>行为对比</strong>代替打分：同一任务，先跑一遍原始 harness 作参考；然后提出两类候选改动——<em>不变量候选</em>（修 Agent 通用短板：规划、工具使用、上下文管理、委托）和<em>领域候选</em>（补当前领域的专业知识、流程、约束）；每个候选都真实执行一遍，再对比轨迹和交付物的差异。哪些改动真的缓解了目标缺陷、哪些引入了回退，一目了然。</p>
+<p>执行器（executor）模型冻结不动；可编辑的外挂面有 8 个组件，全部以文件形式挂载：<code>systemprompt.md</code>、<code>guardrails.md</code>（护栏）、<code>LongTermMEMORY.md</code>（长期记忆）、<code>tool_guidance.md</code>（工具指引）、<code>skills/</code>（按需加载的技能）、<code>sub_agents/</code>（子 agent）、<code>scripts/</code>（可执行脚本）、<code>plugin/</code>（tool-loop 内强制执行的插件）。其中 plugin 是唯一能"强制"而不是"建议"的组件——写进 tool loop 里，模型跳不过去。</p>
+</section>
+
+<section>
+<h2>3. 实验结果：弱模型+好外挂，反超强模型+原装外挂</h2>
+<p>三个专业基准：WorkBuddy-Bench（办公任务，Code/Web/Office 三域）、JobBench（65 个职业任务）、LAB（Harvey 的法律任务，1251 题）。四组"模型 × 初始 harness"配置（GLM-5 / Gemini 3.5 Flash × OpenCode / Codex）。</p>
+<h3>单步改外挂（k=1）平均增益</h3>
+<table class="scroll">
+<tr><th>模型</th><th>WorkBuddy-Bench</th><th>JobBench</th><th>LAB (Partial)</th></tr>
+<tr><td>GLM-5</td><td class="hl">+11.5（64.2→75.7）</td><td>+3.6（20.6→24.2）</td><td>+11.8pp（59.6→71.4）</td></tr>
+<tr><td>Gemini 3.5 Flash</td><td>+5.1（72.4→77.5）</td><td>+4.5（31.5→36.0）</td><td>+18.3pp（63.6→81.9）</td></tr>
+</table>
+<p class="note">对比基线：Meta-Harness（离线搜索后部署）在 WorkBuddy-Bench 上为 76.4；Harness Scaling（每任务现场改但不跨任务积累）在 12 组"基准×配置"里有 7 组反而低于基线。Harness<sup>2</sup> 在 WorkBuddy-Bench 与 JobBench 的全部 4 组配置上超过所有对比基线。</p>
+<h3>并行递归 k=5（每任务 5 个候选）再往上加</h3>
+<p>k=5 平均再加 2.9–3.9 分（WorkBuddy-Bench）、3.0–4.2 分（JobBench）、2.6–6.7pp（LAB）。计算-性能曲线显示 Harness<sup>2</sup> 落在 Pareto 前沿上，Meta-Harness 用更多算力换更低分数。</p>
+<h3>反超是怎么发生的</h3>
+<p>WorkBuddy-Bench 上，GLM-5+Harness<sup>2</sup>（75.7）&gt; Gemini 3.5 Flash 原装（72.4）。换外挂的收益大于换模型的收益——这正是"弱模型+好外挂"的性价比证据。用户给的材料说的"反超原生 Gemini 3.5 Flash"即指此事（75.7 vs 72.4，OpenCode 口径）。</p>
+<h3>跨任务复用也涨分</h3>
+<p>不做任何新一轮探测，直接把 JobBench 攒出来的经验库搬到 WorkBuddy-Bench 上用，一步改分还能再涨 0.6/0.5/2.9 分（Code/Web/Office）。k=5 的经验库比 k=1 的更值钱——任务级探索越多，未来改进受益越大。</p>
+</section>
+
+<section>
+<h2>4. 局限与实用启示</h2>
+<h3>局限</h3>
+<ul>
+<li><strong>算力开销</strong>：每个任务都要"先跑一遍、再跑几个候选、最后组装"，k 越大越贵，论文只做了有界预算内的权衡，不是普适最优。</li>
+<li><strong>行为对比不是真理</strong>：执行有随机性，模型偏见会同时污染参考与候选；论文自己给出 9 个失败案例（如盲目选了 55 分候选而丢掉 95 分的、错误前提在候选间传播扣 2–11 分）。</li>
+<li><strong>改进器更新有限</strong>：改进级递归只往库里存"可执行 harness + 经验文件"，没有更新编辑器参数，经验增长终有上限。</li>
+</ul>
+<h3>给读者的启示</h3>
+<ul>
+<li><strong>调外挂比换模型便宜</strong>：OpenCode/Codex 都是现成 executor，不用动模型、不用训练，直接接入。</li>
+<li><strong>别只看模型榜单</strong>：同一模型换 harness 能差十几分；评估 agent 能力时把 harness 当成重要变量。</li>
+<li><strong>沉淀经验要留证据</strong>：库里每条经验都附执行对比记录，"看起来有用"的改动没有证据支撑就别留。</li>
+<li><strong>时间预算换性能</strong>：k=5 比 k=1 再涨 3 分左右，但每任务算力翻倍——按业务对延迟的容忍度选 k。</li>
+</ul>
+</section>
+
+<footer>参考资料：arXiv:2610.14224（论文原文）｜github.com/google-research/harness2（官方仓库，19.1k stars，Apache-2.0）｜harness2.github.io（项目主页）<br>数字均对照论文 Table 1/2 核实；本页为中文深度解读，非官方材料。</footer>
+
+</div>
+</body>
+</html>
