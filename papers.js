@@ -53,7 +53,7 @@
     return ((manifest && manifest.papers) || []).map(function (p) {
       var name = p.file.replace(/^papers\//, '');
       return { name: name, sha: 'mf:' + name, title: p.title,
-               arxiv: p.arxiv || '', date: '' };
+               arxiv: p.arxiv || '', date: p.date || '' };
     });
   }
 
@@ -75,9 +75,10 @@
           saveCache(cache);
           // 接口返回不全（旧缓存/限流）时，用静态清单补齐缺的文章
           var seen = {};
-          papers.forEach(function (p) { seen[p.name] = true; });
+          papers.forEach(function (p) { seen[p.name] = p; });
           manifestPapers(manifest).forEach(function (p) {
             if (!seen[p.name]) papers.push(p);
+            else if (!seen[p.name].date && p.date) seen[p.name].date = p.date;
           });
           return papers;
         });
