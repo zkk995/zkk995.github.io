@@ -2,16 +2,6 @@
   "updated": "2026-10-26",
   "papers": [
     {
-      "file": "papers/harness2-2610.14224.html",
-      "title": "Harness² 论文解读：让 Agent 自己改好“外挂”，不用改模型",
-      "arxiv": "2610.14224"
-    },
-    {
-      "file": "papers/dream-rsi-2609.14858.html",
-      "title": "Dream-RSI 论文解读：让 Agent 在“梦”里学会更会探索",
-      "arxiv": "2609.14858"
-    },
-    {
       "file": "papers/RLSVR-2607.23802.html",
       "title": "RLSVR 论文解读：给开放任务造一个“自验证”的奖励",
       "arxiv": "2607.23802"
@@ -22,6 +12,16 @@
       "arxiv": "2610.25012"
     },
     {
+      "file": "papers/dream-rsi-2609.14858.html",
+      "title": "Dream-RSI 论文解读：让 Agent 在\"梦\"里学会更会探索",
+      "arxiv": "2609.14858"
+    },
+    {
+      "file": "papers/harness2-2610.14224.html",
+      "title": "Harness² 论文解读：让 Agent 自己改好\"外挂\"，不用改模型",
+      "arxiv": "2610.14224"
+    },
+    {
       "file": "papers/logra.html",
       "title": "LoGRA 论文解读：低秩梯度草图如何砍掉 RL 训练近半显存",
       "arxiv": "2610.06647"
@@ -29,7 +29,7 @@
     {
       "file": "papers/thinkingbox-training.html",
       "title": "ThinkingBox-Training 解读：把数据库终态校验直接变成 Agent 的 RL 奖励",
-      "arxiv": ""
+      "arxiv": "2608.19741"
     }
   ]
 }
