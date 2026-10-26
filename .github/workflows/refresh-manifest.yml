@@ -34,10 +34,8 @@ jobs:
               date = subprocess.run(['git', 'log', '-1', '--format=%cI', '--', f],
                                     capture_output=True, text=True).stdout.strip()
               entries.append({'file': f, 'title': title,
-                              'arxiv': a.group(1) if a else '', '_d': date})
-          entries.sort(key=lambda e: e['_d'], reverse=True)
-          for e in entries:
-              del e['_d']
+                              'arxiv': a.group(1) if a else '', 'date': date})
+          entries.sort(key=lambda e: e['date'], reverse=True)
           manifest = {'updated': datetime.date.today().isoformat(),
                       'papers': entries}
           with open('papers-manifest.json', 'w', encoding='utf-8') as fh:
