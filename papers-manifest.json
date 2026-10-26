@@ -5,43 +5,49 @@
       "file": "papers/RLSVR-2607.23802.html",
       "title": "RLSVR 论文解读：给开放任务造一个“自验证”的奖励",
       "arxiv": "2607.23802",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/conjugate-compilation.html",
       "title": "Conjugate Compilation 论文解读",
       "arxiv": "2610.25012",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/draft-opd-2605.29343.html",
       "title": "Draft-OPD 论文解读：让投机解码的小模型在“自己的错误”上继续进化",
       "arxiv": "2605.29343",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/dream-rsi-2609.14858.html",
       "title": "Dream-RSI 论文解读：让 Agent 在\"梦\"里学会更会探索",
       "arxiv": "2609.14858",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/harness2-2610.14224.html",
       "title": "Harness² 论文解读：让 Agent 自己改好\"外挂\"，不用改模型",
       "arxiv": "2610.14224",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/logra.html",
       "title": "LoGRA 论文解读：低秩梯度草图如何砍掉 RL 训练近半显存",
       "arxiv": "2610.06647",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
     },
     {
       "file": "papers/thinkingbox-training.html",
       "title": "ThinkingBox-Training 解读：把数据库终态校验直接变成 Agent 的 RL 奖励",
       "arxiv": "2608.19741",
-      "date": "2026-10-26T16:09:21+08:00"
+      "date": "2026-10-26T16:10:12+08:00"
+    },
+    {
+      "file": "papers/wtv-2609.24150.html",
+      "title": "WTV 论文解读：让草稿模型直接为「被接受多少」而训练",
+      "arxiv": "2609.24150",
+      "date": "2026-10-26T16:10:12+08:00"
     }
   ]
 }
