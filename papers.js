@@ -1,12 +1,14 @@
 /* 论文清单公共脚本：供主页与 papers/index.html 使用。
  * 数据源：GitHub 公开接口实时读取 papers/ 目录（排除 index.html），
  * 每个文件按其最近一次提交时间排序（新加的在最上面）。
- * 结果按文件 sha 缓存在 localStorage，未变化的文件不重复请求。 */
+ * 结果按文件 sha 缓存在 localStorage，未变化的文件不重复请求。
+ * 容错策略：单篇请求失败不影响整页；接口返回不全时用 papers-manifest.json 补齐；
+ * 接口整体失败时退回 papers-manifest.json。 */
 (function () {
   var REPO = 'zkk995/zkk995.github.io';
   var CACHE_KEY = 'papersCache_v2';
   var IN_PAPERS = location.pathname.replace(/\/$/, '').indexOf('/papers') !== -1;
-  var PREFIX = IN_PAPERS ? '' : 'papers/';
+  var PREFIX = IN_PAPERS ? '../' : '';
 
   function loadCache() {
     try { return JSON.parse(localStorage.getItem(CACHE_KEY)) || {}; } catch (e) { return {}; }
@@ -28,37 +30,61 @@
     var rawUrl = 'https://raw.githubusercontent.com/' + REPO + '/master/papers/' + entry.name;
     var commitUrl = 'https://api.github.com/repos/' + REPO +
       '/commits?path=papers/' + entry.name + '&per_page=1';
-    return Promise.all([
-      fetch(rawUrl).then(function (r) { return r.text(); }),
-      getJSON(commitUrl)
-    ]).then(function (res) {
+    // 原文内容和提交时间各自容错：谁失败都不拖垮整页
+    var raw = fetch(rawUrl).then(function (r) {
+      if (!r.ok) throw new Error('http ' + r.status);
+      return r.text();
+    }).catch(function () { return ''; });
+    var commits = getJSON(commitUrl).catch(function () { return []; });
+    return Promise.all([raw, commits]).then(function (res) {
       var text = res[0], commits = res[1];
-      var title = (text.match(/<title>([^<]+)/) || [, '论文解读'])[1].trim();
+      var title = (text.match(/<title>([^<]+)/) || [, entry.name.replace(/\.html$/, '')])[1].trim();
       var a = text.match(/arxiv\.org\/abs\/([0-9.]+)/i) || text.match(/arXiv:\s*([0-9.]+)/);
       var date = (commits[0] && commits[0].commit &&
         commits[0].commit.committer.date) || '';
       var meta = { name: entry.name, sha: entry.sha, title: title,
                    arxiv: a ? a[1] : '', date: date };
-      cache[entry.sha] = meta;
+      if (text) cache[entry.sha] = meta;
       return meta;
+    });
+  }
+
+  function manifestPapers(manifest) {
+    return ((manifest && manifest.papers) || []).map(function (p) {
+      var name = p.file.replace(/^papers\//, '');
+      return { name: name, sha: 'mf:' + name, title: p.title,
+               arxiv: p.arxiv || '', date: '' };
     });
   }
 
   function fetchPapers() {
     var cache = loadCache();
-    return getJSON('https://api.github.com/repos/' + REPO +
-        '/contents/papers?ts=' + Date.now())
-      .then(function (entries) {
-        var files = entries.filter(function (e) {
-          return e.type === 'file' && e.name.endsWith('.html') && e.name !== 'index.html';
-        });
-        return Promise.all(files.map(function (e) { return metaFor(e, cache); }));
-      })
-      .then(function (papers) {
-        saveCache(cache);
-        papers.sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
-        return papers;
+    var manifestUrl = (IN_PAPERS ? '../' : '') + 'papers-manifest.json?ts=' + Date.now();
+    return Promise.all([
+      getJSON('https://api.github.com/repos/' + REPO +
+        '/contents/papers?ts=' + Date.now()).catch(function () { return null; }),
+      getJSON(manifestUrl).catch(function () { return null; })
+    ]).then(function (results) {
+      var entries = results[0], manifest = results[1];
+      if (!entries) return manifestPapers(manifest); // 接口整体失败：退回静态清单
+      var files = entries.filter(function (e) {
+        return e.type === 'file' && e.name.endsWith('.html') && e.name !== 'index.html';
       });
+      return Promise.all(files.map(function (e) { return metaFor(e, cache); }))
+        .then(function (papers) {
+          saveCache(cache);
+          // 接口返回不全（旧缓存/限流）时，用静态清单补齐缺的文章
+          var seen = {};
+          papers.forEach(function (p) { seen[p.name] = true; });
+          manifestPapers(manifest).forEach(function (p) {
+            if (!seen[p.name]) papers.push(p);
+          });
+          return papers;
+        });
+    }).then(function (papers) {
+      papers.sort(function (a, b) { return (b.date || '').localeCompare(a.date || ''); });
+      return papers;
+    });
   }
 
   function render(papers) {
@@ -87,16 +113,6 @@
   }
 
   window.renderPaperList = function () {
-    return fetchPapers().then(render).catch(function () {
-      // 实时接口失败时退回静态清单
-      fetch((IN_PAPERS ? '../' : '') + 'papers-manifest.json?ts=' + Date.now())
-        .then(function (r) { return r.json(); })
-        .then(function (data) {
-          render((data.papers || []).map(function (p) {
-            return { name: p.file.replace(/^papers\//, ''), title: p.title, arxiv: p.arxiv, date: '' };
-          }));
-        })
-        .catch(fail);
-    });
+    return fetchPapers().then(render).catch(fail);
   };
 })();
