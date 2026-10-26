@@ -1,0 +1,59 @@
+name: 刷新论文备份清单
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'papers/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 重新生成 papers-manifest.json
+        run: |
+          python3 - <<'PY'
+          import datetime, glob, json, re, subprocess
+
+          entries = []
+          for f in sorted(glob.glob('papers/*.html')):
+              name = f.split('/')[-1]
+              if name == 'index.html':
+                  continue
+              text = open(f, encoding='utf-8', errors='ignore').read()
+              m = re.search(r'<title>([^<]+)', text)
+              title = m.group(1).strip() if m else name[:-5]
+              a = (re.search(r'arxiv\.org/abs/([0-9.]+)', text, re.I)
+                   or re.search(r'arXiv:\s*([0-9.]+)', text))
+              date = subprocess.run(['git', 'log', '-1', '--format=%cI', '--', f],
+                                    capture_output=True, text=True).stdout.strip()
+              entries.append({'file': f, 'title': title,
+                              'arxiv': a.group(1) if a else '', '_d': date})
+          entries.sort(key=lambda e: e['_d'], reverse=True)
+          for e in entries:
+              del e['_d']
+          manifest = {'updated': datetime.date.today().isoformat(),
+                      'papers': entries}
+          with open('papers-manifest.json', 'w', encoding='utf-8') as fh:
+              json.dump(manifest, fh, ensure_ascii=False, indent=2)
+              fh.write('\n')
+          print('generated', len(entries), 'papers')
+          PY
+
+      - name: 有变化才提交
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add papers-manifest.json
+          if ! git diff --cached --quiet; then
+            git commit -m "自动刷新论文备份清单"
+            git push
+          else
+            echo "清单无变化，跳过提交"
+          fi
