@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Draft-OPD 论文解读：让投机解码的小模型在“自己的错误”上继续进化</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;overflow-x:auto}
+.formula math{font-size:1.05em}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.scroll{overflow-x:auto}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 180px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+.twocol{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}
+.card{flex:1 1 260px;border-radius:12px;padding:14px 16px;font-size:14.5px;border:1px solid var(--line)}
+.card.good{background:var(--greenbg)}
+.card.bad{background:var(--orangebg)}
+.card h4{margin:0 0 6px;font-size:15px}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">投机解码</span><span class="tag">推理加速</span><span class="tag">在线蒸馏</span><span class="tag">arXiv:2605.29343v2</span>
+</div>
+<h1>Draft-OPD 论文解读：让投机解码的小模型在“自己的错误”上继续进化</h1>
+<p class="meta">上海交通大学 · 上海人工智能实验室 · 清华大学 · 香港中文大学 等 ｜ CC BY 4.0 ｜ <a href="https://arxiv.org/abs/2605.29343">arXiv:2605.29343</a></p>
+<p class="meta">这篇论文正面回答了训练类投机解码的痛点：草稿模型（EAGLE-3、DFlash 这类）用监督微调训练到一定程度就停滞了，接受长度上不去。作者把病根定位成“训练看的状态和推理走的状态不是一批”，然后借用在线蒸馏（OPD）的思路，设计了一套让草稿模型真正“在岗训练”的方案。</p>
+</header>
+
+<div class="oneline"><strong>一句话核心：</strong>用目标模型护航采样保住质量，把验证时暴露的“草稿犯错位置”记录下来并重放，让目标模型在这些草稿亲历的状态上打分——接受的部分用正向 KL 巩固、拒绝的部分用反向 KL 纠错，最终让思考型模型拿到 5 倍以上的无损加速，比 EAGLE-3 快 23%、比 DFlash 快 13%。</div>
+
+<section>
+<h2>一、背景：草稿模型的“SFT 天花板”</h2>
+<p>投机解码的原理很直白：小草稿模型一口气猜 K 个 token，大目标模型并行验证，接受的留下、拒绝的重来，输出分布与大模型完全一致（无损）。加速比的关键指标是<strong>接受长度</strong><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>τ</mi></mrow><annotation encoding="application/x-tex">\tau</annotation></semantics></math></span>——每轮验证平均能白拿几个 token，草稿模型和大模型越合拍，<span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>τ</mi></mrow><annotation encoding="application/x-tex">\tau</annotation></semantics></math></span> 越高、加速越猛。</p>
+<p>主流做法（EAGLE-3、DFlash）都是拿目标模型生成的轨迹做监督微调（SFT）。但作者给出了一条关键训练曲线：SFT 热身之后，继续训<strong>接受长度不再涨</strong>，在平台期反复横跳；更蹊跷的是，拿 OPD 同源的更多数据继续 SFT 甚至会把接受长度训低。</p>
+<p><strong>病根：训练与推理的状态错配。</strong>SFT 里草稿模型见到的每个前缀都是目标模型生成的（目标分布的状态）；可推理时接受长度恰恰由“草稿模型自己提议的块”决定——它在自己引入的偏差状态上表现如何，SFT 从来没教过。这是强化学习里经典的 exposure bias 在投机解码里的变体。</p>
+</section>
+
+<section>
+<h2>二、为什么“直接上在线蒸馏”行不通</h2>
+<p>在线蒸馏（OPD）的药方是：让学生在自己走出的状态上接受老师监督：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">O</mi><mi mathvariant="normal">P</mi><mi mathvariant="normal">D</mi></mrow></msub><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><msub><mi>s</mi><mi>t</mi></msub></msub><mrow><mo fence="true">[</mo><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mo stretchy="false">(</mo><msubsup><mi>p</mi><mi>θ</mi><mi>t</mi></msubsup><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><msubsup><mi>q</mi><mi>ϕ</mi><mi>t</mi></msubsup><mo stretchy="false">)</mo><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{OPD}}=\mathbb{E}_{s_t}\left[D_{\mathrm{KL}}(p_\theta^t\,\|\,q_\phi^t)\right]</annotation></semantics></math></span></div>
+<p>但套到草稿模型上立刻卡壳，两条路都堵死：</p>
+<div class="twocol">
+<div class="card bad"><h4>✗ 草稿模型自己采样</h4>EAGLE/DFlash 这类草稿头是为“跟在目标模型后面猜几个 token”设计的，独立自回归续写会迅速复读、退化，产出的状态本身就是垃圾，监督信号不可靠。</div>
+<div class="card bad"><h4>✗ 目标模型护航采样</h4>让目标模型带着草稿模型 rollout 能得到高质量序列，但投机验证是无损的——被接受的续写完全服从目标分布，草稿犯的错（被拒绝的提议）被直接扔掉，而<strong>这些错误恰恰是最有价值的训练信号</strong>。转了一圈又回到离线 SFT。</div>
+</div>
+</section>
+
+<section>
+<h2>三、Draft-OPD：护航采样 + 错位重放</h2>
+<p>Draft-OPD 的巧思在于把两条死路接成一条活路：<strong>用目标模型护航保证 rollout 稳定，但把草稿“当时 propose 了什么”完整记账，事后重放。</strong>三个部件环环相扣：</p>
+
+<div class="flow">
+<div class="step"><b>① 护航采样 + 记锚点</b><br>正常跑投机解码收集目标质量的序列，同时把每轮草稿块的起始位置记为“锚点”。锚点就是草稿模型推理时真正“行动过”的状态快照。</div>
+<div class="step"><b>② 从锚点重放</b><br>从每个锚点重放上下文 <span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>c</mi><mi>m</mi></msub><mo>=</mo><mo stretchy="false">(</mo><mi>x</mi><mo separator="true">,</mo><mtext> </mtext><msub><mi>y</mi><mrow><mo>≤</mo><msub><mi>a</mi><mi>m</mi></msub></mrow></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">c_m=(x,\,y_{\le a_m})</annotation></semantics></math></span> 中的草稿块 <span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>d</mi><mi>m</mi></msub><mo>=</mo><mo stretchy="false">(</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mn>1</mn></mrow></msub><mo separator="true">,</mo><mo>…</mo><mo separator="true">,</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>K</mi></mrow></msub><mo stretchy="false">)</mo><mo>∼</mo><msub><mi>q</mi><mi>ϕ</mi></msub><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><mi>x</mi><mo separator="true">,</mo><mtext> </mtext><msub><mi>y</mi><mrow><mo>≤</mo><msub><mi>a</mi><mi>m</mi></msub></mrow></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">d_m=(d_{m,1},\ldots,d_{m,K})\sim q_\phi(\cdot\mid x,\,y_{\le a_m})</annotation></semantics></math></span>，让学生（草稿）和老师（目标）在同一批草稿提议的前缀上算对数概率，包括被验证拒绝的位置。</div>
+<div class="step"><b>③ 分而治之的蒸馏目标</b><br>验证结果天然把草稿 token 分成“被接受的”和“被拒绝的”，两类用不同方向的 KL 分别处理。</div>
+</div>
+
+<p>重放时学生与老师的打分：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>log</mi><mo>⁡</mo><msub><mi>q</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><mi>log</mi><mo>⁡</mo><msub><mi>q</mi><mi>ϕ</mi></msub><mo stretchy="false">(</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo>∣</mo><msub><mi>c</mi><mi>m</mi></msub><mo separator="true">,</mo><mtext> </mtext><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mo>&lt;</mo><mi>k</mi></mrow></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\log q_{m,k}(d_{m,k})=\log q_\phi(d_{m,k}\mid c_m,\,d_{m,&lt;k})</annotation></semantics></math></span></div>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>log</mi><mo>⁡</mo><msub><mi>p</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><mi>log</mi><mo>⁡</mo><msub><mi>p</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo>∣</mo><msub><mi>c</mi><mi>m</mi></msub><mo separator="true">,</mo><mtext> </mtext><msub><mi>d</mi><mrow><mi>m</mi><mo separator="true">,</mo><mo>&lt;</mo><mi>k</mi></mrow></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\log p_{m,k}(d_{m,k})=\log p_\theta(d_{m,k}\mid c_m,\,d_{m,&lt;k})</annotation></semantics></math></span></div>
+<p>验证结果把草稿 token 分为接受集与拒绝集：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">I</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><mo>=</mo><mo stretchy="false">{</mo><mo stretchy="false">(</mo><mi>m</mi><mo separator="true">,</mo><mi>k</mi><mo stretchy="false">)</mo><mo>:</mo><mn>1</mn><mo>≤</mo><mi>k</mi><mo>≤</mo><msub><mi>r</mi><mi>m</mi></msub><mo stretchy="false">}</mo><mo separator="true">,</mo><mspace width="1em"/><msub><mi mathvariant="script">I</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub><mo>=</mo><mo stretchy="false">{</mo><mo stretchy="false">(</mo><mi>m</mi><mo separator="true">,</mo><mi>k</mi><mo stretchy="false">)</mo><mo>:</mo><msub><mi>r</mi><mi>m</mi></msub><mo>&lt;</mo><mi>k</mi><mo>≤</mo><mi>K</mi><mo stretchy="false">}</mo></mrow><annotation encoding="application/x-tex">\mathcal{I}_{\mathrm{acc}}=\{(m,k):1\le k\le r_m\},\quad\mathcal{I}_{\mathrm{rej}}=\{(m,k):r_m&lt;k\le K\}</annotation></semantics></math></span></div>
+
+<h3>接受与拒绝，两种 KL 方向</h3>
+<p><strong>被接受的 token</strong>：草稿已经和大模型对上号了，用<strong>正向 KL</strong> <span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mo stretchy="false">(</mo><mi>p</mi><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><mi>q</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">D_{\mathrm{KL}}(p\,\|\,q)</annotation></semantics></math></span> 让草稿的分布去覆盖目标分布，巩固既有的一致性：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><mo>=</mo><mfrac><mn>1</mn><mrow><mi mathvariant="normal">∣</mi><msub><mi mathvariant="script">I</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><mi mathvariant="normal">∣</mi></mrow></mfrac><munder><mo>∑</mo><mrow><mo stretchy="false">(</mo><mi>m</mi><mo separator="true">,</mo><mi>k</mi><mo stretchy="false">)</mo><mo>∈</mo><msub><mi mathvariant="script">I</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub></mrow></munder><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>p</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><msub><mi>q</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{acc}}=\frac{1}{|\mathcal{I}_{\mathrm{acc}}|}\sum_{(m,k)\in\mathcal{I}_{\mathrm{acc}}}D_{\mathrm{KL}}\!\left(p_{m,k}\,\|\,q_{m,k}\right)</annotation></semantics></math></span></div>
+<p><strong>被拒绝的 token</strong>：草稿自信地猜错了。用<strong>反向 KL</strong> <span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mo stretchy="false">(</mo><mi>q</mi><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><mi>p</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">D_{\mathrm{KL}}(q\,\|\,p)</annotation></semantics></math></span> 惩罚草稿自己的高概率模式——正向 KL 在这种状态下会让草稿把概率摊到老师所有可能选项上（均值化），反向 KL 则逼着它在老师不同意的模式上直接降权。另外，一个块开头的错误会连累后面整段（前面被拒，后面写对也没用），所以越靠前的拒绝越重要，用指数衰减加权：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub><mo>=</mo><mfrac><mn>1</mn><mi>Z</mi></mfrac><munder><mo>∑</mo><mrow><mo stretchy="false">(</mo><mi>m</mi><mo separator="true">,</mo><mi>k</mi><mo stretchy="false">)</mo><mo>∈</mo><msub><mi mathvariant="script">I</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub></mrow></munder><msub><mi>w</mi><mi>k</mi></msub><mtext> </mtext><msub><mi>D</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>q</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mtext> </mtext><mi mathvariant="normal">∥</mi><mtext> </mtext><msub><mi>p</mi><mrow><mi>m</mi><mo separator="true">,</mo><mi>k</mi></mrow></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{rej}}=\frac{1}{Z}\sum_{(m,k)\in\mathcal{I}_{\mathrm{rej}}}w_k\,D_{\mathrm{KL}}\!\left(q_{m,k}\,\|\,p_{m,k}\right)</annotation></semantics></math></span>&nbsp;&nbsp;<span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>w</mi><mi>k</mi></msub><mo>=</mo><msup><mi>γ</mi><mrow><mi>k</mi><mo>−</mo><mn>1</mn></mrow></msup></mrow><annotation encoding="application/x-tex">w_k=\gamma^{k-1}</annotation></semantics></math></span></div>
+<p>最终目标就是两者的加权平均（实验里两个权重各取 1）：</p>
+<div class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">D</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mtext>-</mtext><mi mathvariant="normal">O</mi><mi mathvariant="normal">P</mi><mi mathvariant="normal">D</mi></mrow></msub><mo>=</mo><mfrac><mrow><msub><mi>λ</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><mo>+</mo><msub><mi>λ</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub></mrow><mrow><msub><mi>λ</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">c</mi></mrow></msub><mo>+</mo><msub><mi>λ</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">j</mi></mrow></msub></mrow></mfrac></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{Draft\text{-}OPD}}=\frac{\lambda_{\mathrm{acc}}\mathcal{L}_{\mathrm{acc}}+\lambda_{\mathrm{rej}}\mathcal{L}_{\mathrm{rej}}}{\lambda_{\mathrm{acc}}+\lambda_{\mathrm{rej}}}</annotation></semantics></math></span></div>
+<p class="note">工程上很省：重放所需的目标模型隐状态在采样时已经算过，直接复用，不用重跑大模型。</p>
+</section>
+
+<section>
+<h2>四、实验：思考型模型首次突破 5 倍无损加速</h2>
+<p>实验对象是 Qwen3-4B/8B（开/关思考模式 × 温度 0/0.6），任务覆盖数学（GSM8K、MATH-500、AIME25）、代码（MBPP、HumanEval、SWE-Lite）和对话（MT-Bench），草稿头沿用 DFlash 式并行结构，训练算力对齐对比。</p>
+<div class="scroll"><table>
+<thead><tr><th>设定（思考模式，温度 0）</th><th>GSM8K</th><th>MATH-500</th><th>AIME25</th><th>MBPP</th><th>平均加速</th><th>平均 τ</th></tr></thead>
+<tbody>
+<tr><td>EAGLE-3（Q3-4B）</td><td>4.41×</td><td>4.15×</td><td>3.30×</td><td>4.29×</td><td>3.87×</td><td>5.33</td></tr>
+<tr><td>DFlash（Q3-4B）</td><td>4.51×</td><td>4.88×</td><td>4.69×</td><td>4.39×</td><td>4.33×</td><td>5.51</td></tr>
+<tr><td class="hl">Draft-OPD（Q3-4B）</td><td class="hl">5.31×</td><td class="hl">5.55×</td><td class="hl">5.28×</td><td class="hl">4.85×</td><td class="hl">4.86×</td><td class="hl">5.96</td></tr>
+<tr><td>EAGLE-3（Q3-8B）</td><td>4.58×</td><td>4.45×</td><td>4.01×</td><td>4.55×</td><td>4.06×</td><td>5.64</td></tr>
+<tr><td>DFlash（Q3-8B）</td><td>4.67×</td><td>5.01×</td><td>4.77×</td><td>4.50×</td><td>4.34×</td><td>5.19</td></tr>
+<tr><td class="hl">Draft-OPD（Q3-8B）</td><td class="hl">5.36×</td><td class="hl">5.80×</td><td class="hl">5.51×</td><td class="hl">4.86×</td><td class="hl">4.89×</td><td class="hl">5.73</td></tr>
+</tbody></table></div>
+<p>关思考模式更快：Q3-8B 上 Draft-OPD 平均 6.49×（MATH-500 到 7.64×）。汇总口径：<strong>思考型模型平均 5×以上无损加速，比 EAGLE-3 高 23%、比 DFlash 高 13%</strong>；SGLang 部署实测同样拿到增益。</p>
+
+<h3>消融：增益确实来自“在岗训练”</h3>
+<ul>
+<li><strong>不是数据多</strong>：拿同样的 OPD 提示词池让目标模型生成回复继续 SFT，效果明显不如 Draft-OPD——关键是在草稿亲历的状态上蒸目标的分布，不是多见几个 prompt。</li>
+<li><strong>KL 方向要分家</strong>：全正向、全反向都更差，全反向最差，混合方案最优。</li>
+<li><strong>指数衰减有用</strong>：去掉后 MATH-500 加速从 5.55× 掉到 5.13×。</li>
+<li><strong>朴素护航采样不行</strong>：等价于 KL 版 SFT，平均加速 4.63× → 4.29×（-7.3%），证明“保留草稿引发的错误”这一步不可省。</li>
+</ul>
+</section>
+
+<section>
+<h2>五、有意思的观察与局限</h2>
+<p><strong>思考模式的“可草稿性鸿沟”</strong>：同样是数学和代码任务，思考模式下的加速明显低于非思考模式。附录 C 给了证据：思考型回复的逐 token 负对数似然（NLL）系统性更高——模型在长推理链里下一步选择更发散，草稿模型要拟合的目标分布更“平”，自然更难猜中。这说明<strong>推理内容的加速上限部分由目标模型自身的不确定性决定</strong>，是个值得单独攻的问题。</p>
+<p><strong>局限</strong>：训练时 rollout 截断在 4096 token（评估用 8192），超长生成后段的状态没覆盖到；实验只在 Qwen3 + DFlash 式架构上验证，换家族换框架的迁移性待考；只针对无损投机解码，近似/有损验证是开放方向。</p>
+</section>
+
+<section>
+<h2>六、点评：为什么值得读</h2>
+<ul>
+<li><strong>问题定位精准</strong>：把“SFT 天花板”归因到状态错配，并用训练曲线 + 消融闭环验证，逻辑链完整。</li>
+<li><strong>方法像 RL 但不是 RL</strong>：锚点重放 ≈ 在验证轨迹上做“带事后反思的行为克隆”，接受/拒绝分区 + 双向 KL 是把验证信号（天然奖励）编译进了蒸馏目标，不需要奖励模型、不需要策略梯度。</li>
+<li><strong>对从业者实用</strong>：框架搭在 SpecForge、verl、SGLang 这些开源设施上，“在验证期错误上做后训练”的思路可以直接迁移到自己的草稿模型流程。</li>
+<li><strong>与 RLSVR 互补</strong>：那篇在 RLVR 侧给开放任务造可验证奖励，这篇在加速侧让草稿模型吃验证错误——一个解决“练什么”，一个解决“怎么跑得快”。</li>
+</ul>
+</section>
+
+<footer>
+解读基于 arXiv:2605.29343v2 原文整理，公式已用 KaTeX 预渲染为 MathML，本页面完全离线可打开。原文：<a href="https://arxiv.org/abs/2605.29343">arxiv.org/abs/2605.29343</a>。
+</footer>
+
+</div>
+</body>
+</html>
