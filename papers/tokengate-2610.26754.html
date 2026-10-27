@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TokenGate 论文解读：让模型学会“略读”，长文档 Prefill 提速 11.3 倍</title>
+<style>
+:root { --ink:#1a1f2e; --muted:#5b6472; --line:#e4e7ee; --accent:#0b62d6; --bg:#f7f8fb; --card:#ffffff; }
+* { box-sizing: border-box; }
+body { margin:0; padding:0; background:var(--bg); color:var(--ink);
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  line-height:1.85; font-size:16px; }
+main { max-width:860px; margin:0 auto; padding:48px 24px 80px; }
+h1 { font-size:27px; line-height:1.45; margin:0 0 8px; }
+h2 { font-size:21px; margin:44px 0 14px; padding-top:18px; border-top:1px solid var(--line); }
+h3 { font-size:17px; margin:26px 0 10px; }
+p { margin:10px 0; }
+.meta { color:var(--muted); font-size:14px; margin-bottom:28px; }
+.lede { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:16px 20px; margin:0 0 8px; }
+.eqwrap { overflow-x:auto; }
+.eq { display:flex; justify-content:center; padding:10px 4px; }
+.eqnote { text-align:center; color:var(--muted); font-size:13.5px; margin-top:2px; }
+ul,ol { padding-left:24px; margin:10px 0; }
+li { margin:6px 0; }
+table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; background:var(--card); }
+th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+th { background:#eef2f8; font-weight:600; }
+.hl { background:#f0f6ff; border:1px solid #d6e6fb; border-radius:8px; padding:12px 18px; margin:14px 0; }
+.caveat { background:#fff8ef; border:1px solid #f3e3c3; border-radius:8px; padding:12px 18px; margin:14px 0; }
+code { background:#eef0f4; border-radius:4px; padding:1px 6px; font-size:14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+.mathml { font-size:105%; }
+footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px; }
+.k { display:inline-block; background:var(--accent); color:#fff; border-radius:4px;
+  padding:0 8px; font-size:13px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<main>
+<h1>TokenGate 论文解读：让模型学会“略读”，长文档 Prefill 提速 11.3 倍</h1>
+<p class="meta">TokenGate: Adapting LLMs for Fast and Memory-Efficient Prefill with Learned Token Pruning · Liana Patel, Rishabh Ranjan, Ion Stoica, Matei Zaharia, Carlos Guestrin（Stanford &amp; UC Berkeley）· arXiv:2610.26754 · 2026-10-19 挂网</p>
+
+<div class="lede">
+<p><strong>一句话：</strong>给训练好的模型加一个很小的“门控”组件，让模型像人类专家一样先<strong>略读</strong>整份输入、只把真正重要的 token 送进后面的层——长文档、PDF、代码库这类长输入的 Prefill（读完输入、吐出第一个字之前的阶段）因此最多快 <strong>11.3 倍</strong>、峰值显存最多降 <strong>3.4 倍</strong>，而且任务精度不掉。整个“选哪些 token”的过程是端到端可训练的。</p>
+</div>
+
+<h2>问题：Prefill 为什么贵</h2>
+<p>标准 Transformer 处理长输入时，会<strong>把每个 token 都完整送过每一层</strong>：注意力计算量随序列长度近似平方增长，前馈网络计算和 KV Cache 占用也随 token 数线性上升。检索问答（RAG）、长文档摘要这类场景还有个额外麻烦——输入内容每次请求都不同，KV Cache 没法预先算好，每次都得老老实实重新 Prefill 一遍。</p>
+<p>一个自然的想法是：在模型内部早点判断哪些 token 后面还用得上，把没用的提前“请出计算队伍”。剪得越早省得越多，但层越浅越难判断一个 token 的重要性。已有方法分两条路：免训练剪枝（靠注意力分数等启发式规则）便宜但在高剪枝率下掉精度；改架构的方法效果好，却要从头预训练。TokenGate 走第三条路：<strong>给已有模型装一个可训练的小门控</strong>，几小时微调就能装上。</p>
+
+<h2>机制：先读完，再裁员</h2>
+<p>TokenGate 保留完整输入。所有 token 先照常通过前面的层，到达预设的门控层 <code>L</code>（Qwen3-1.7B 主实验取 L=1）后，一个很小的 MLP 评分网络读取每个 token 在该层注意力之后的残差表示，给它打一个重要性分数；Top-K 选择器只保留得分最高的 K 个 token，<strong>后面的层只处理这 K 个</strong>，被剪掉的 token 不再参与计算、也不生成 KV Cache 条目。</p>
+<p>几条保护性设计：</p>
+<ul>
+<li>用户的问题、指令部分<strong>永远不剪</strong>，只允许剪文档内容部分；训练时的目标 token 和解码阶段新生成的 token 也不受门控影响。</li>
+<li>每层注意力带一个<strong>可学习的逐头增益和温度</strong>，修正“可见 key 变少”带来的注意力分布偏移。</li>
+<li>训练时把全上下文损失和随机保留预算下的损失取平均，<strong>一个训练好的门控可以服务不同的剪枝预算</strong>，推理时按需调节保留多少。</li>
+</ul>
+
+<h2>关键：Top-K 不可微，怎么端到端训练</h2>
+<p>这是全文最巧的一步。“某个 token 是否入选 Top-K”是离散选择，任务损失的梯度传不到评分网络——门控学不会。TokenGate 借了 MoE 路由器的思路：MoE 在“专家”维度做稀疏选择，它就在“输入 token”维度做稀疏选择。做法是，被保留 token 的重要性分数 <code>s_j</code> 继续参与门控层之上的注意力计算，变成注意力 logits 上每个 key 对应的偏置：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mover accent="true"><mi>a</mi><mo>~</mo></mover><mrow><mi>i</mi><mi>j</mi></mrow><mrow><mo stretchy="false">(</mo><mi>h</mi><mo stretchy="false">)</mo></mrow></msubsup><mtext>  </mtext><mo>=</mo><mtext>  </mtext><msub><mi>g</mi><mi>h</mi></msub><mo>⋅</mo><msubsup><mi>a</mi><mrow><mi>i</mi><mi>j</mi></mrow><mrow><mo stretchy="false">(</mo><mi>h</mi><mo stretchy="false">)</mo></mrow></msubsup><mtext>  </mtext><mo>+</mo><mtext>  </mtext><msub><mi>s</mi><mi>j</mi></msub></mrow><annotation encoding="application/x-tex">\tilde{a}^{(h)}_{ij} \;=\; g_h \cdot a^{(h)}_{ij} \;+\; s_j</annotation></semantics></math></div><div class="eqnote">a 为原注意力 logits，g 为逐头可学习增益，s_j 为 token j 的门控分数</div></div>
+<p>这样，“是否入选”依然是离散的，但<strong>入选 token 的分数本身留在可微计算图里</strong>，梯度可以沿这条路径流回评分网络：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mtext>task</mtext></msub><mtext>  </mtext><mo>⟶</mo><mtext>  </mtext><mtext>上层注意力</mtext><mtext>  </mtext><mo>⟶</mo><mtext>  </mtext><msub><mi>s</mi><mi>j</mi></msub><mtext>  </mtext><mo>⟶</mo><mtext>  </mtext><mtext>评分网络</mtext></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\text{task}} \;\longrightarrow\; \text{上层注意力} \;\longrightarrow\; s_j \;\longrightarrow\; \text{评分网络}</annotation></semantics></math></div><div class="eqnote">只要保留预算 K &gt; 1，这条梯度路径就成立</div></div>
+<p>训练目标本身很朴素，就是常见的任务损失加上随机预算：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi mathvariant="script">L</mi><mtext>  </mtext><mo>=</mo><mtext>  </mtext><mstyle scriptlevel="0" displaystyle="false"><mfrac><mn>1</mn><mn>2</mn></mfrac></mstyle><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><msub><mi mathvariant="script">L</mi><mtext>全上下文</mtext></msub><mtext>  </mtext><mo>+</mo><mtext>  </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mi>K</mi><mo>∼</mo><mi>p</mi><mo stretchy="false">(</mo><mi>K</mi><mo stretchy="false">)</mo></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">[</mo><msub><mi mathvariant="script">L</mi><mrow><mtext>剪枝</mtext><mo stretchy="false">(</mo><mi>K</mi><mo stretchy="false">)</mo></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">]</mo><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo></mrow><annotation encoding="application/x-tex">\mathcal{L} \;=\; \tfrac{1}{2}\Big(\mathcal{L}_{\text{全上下文}} \;+\; \mathbb{E}_{K \sim p(K)}\big[\mathcal{L}_{\text{剪枝}(K)}\big]\Big)</annotation></semantics></math></div><div class="eqnote">让同一个门控在不同保留预算下都好用</div></div>
+<p>收益来自两处的配合：评分网络学会了更准地挑 token，同时模型主干在联合训练中逐渐适应了“被剪过”的上下文。作者把后者归因于 token 间信息的重新分布，论文坦承没有进一步验证内部机制。</p>
+
+<h2>效果：快多少，稳不稳</h2>
+<p>主实验在 Qwen3-1.7B 上做，覆盖五类任务：代码仓库补全（RepoBench-P）、多跳问答（2WikiMultihopQA）、长文摘要（MultiNews）、医学信息抽取（BioDEX）和大海捞针（NIAH），对比 FastKV、SlimInfer、DASH、GemFilter、FlexPrefill、MInference 六个基线，计时在单张 A100、batch size 1 下完成。</p>
+<ul>
+<li>相比完整 Prefill：<strong>TTFT（首字延迟）快 1.4～11.3 倍</strong>，峰值 Prefill 显存低 1.5～3.4 倍，各任务指标不低于完整上下文基线。</li>
+<li>相比此前最好的剪枝方法：TTFT 最多再快 <strong>6.4 倍</strong>，峰值显存最多再低 <strong>2 倍</strong>，在五项任务上整体落在帕累托前沿上。</li>
+<li>上下文越长赚得越多：在 16k 上训练的门控直接用到 128k，TTFT 加速最高约 <strong>13 倍</strong>——长度外推能力对长文档场景很实用。</li>
+<li>极端情况的样子：一个 32,191 token 的提示只保留 144 个（约 <strong>0.4%</strong>），TTFT 从 1471 毫秒降到 130 毫秒，答案一致。当然这是展示性例子，日常使用不会剪这么狠。</li>
+<li>混合注意力架构也能用：Qwen3.5-2B 一半的层是 Gated DeltaNet，没有注意力分数，FastKV 这类方法无处下手；TokenGate 的评分网络读的是隐藏状态，门控照装。NIAH 32k 上门控放在第 3 层，精度追平完整上下文时快 3.8 倍（比同条件 FastKV 再快 2.1 倍）；门控前移到第 1～2 层最高 7.8 倍，精度差距控制在 6% 以内。</li>
+</ul>
+<p>不同任务还呈现了不同的保留模式——模型并不是机械地保留开头结尾，而是按任务学会各自的“略读”策略。</p>
+
+<h2>工程账：改装成本有多高</h2>
+<ul>
+<li><strong>训练开销接近普通 LoRA：</strong>门控加上 LoRA（r=16），每步只比纯 LoRA 慢约 1.3 倍，平均训练耗时 1.8 vs 2.2 A100 小时，且五个任务里四个收敛更快。把它当成一次略重一点的 PEFT 微调即可。</li>
+<li><strong>推理侧要动内核：</strong>注意力 logits 上加逐 key 偏置，标准融合注意力内核不支持；仓库提供可选的 FlashAttention-2 偏置内核和 FlexAttention 回退实现。</li>
+<li><strong>门控位置是个权衡：</strong>放得太晚，前面的计算已经花掉；放得太早（第 0 层），表示信息不足、评分不准。BioDEX 消融显示第 1～2 层是甜点位。</li>
+</ul>
+
+<h2>值得琢磨的三点</h2>
+<ul>
+<li><strong>“学出来的剪枝”第一次跑通了端到端。</strong>之前免训练方法靠启发式，可训练方法被 Top-K 卡住；MoE 路由器的偏置技巧搬到 token 维度，是这篇论文真正的技术贡献。</li>
+<li><strong>它要按场景训练。</strong>不是拿来即用的免费午餐——每个部署场景需要一遍 1～2 小时量级的适配训练，好处是“学什么该保留”可以贴合业务数据；官方已放出 NIAH 任务的门控检查点可直接复现。</li>
+<li><strong>适用边界清楚：</strong>收益集中在长输入 Prefill，短对话基本用不上；剪枝只在门控层做一次（而非逐层），更激进的逐层剪枝是留白的后续方向。对被墙在长文档、代码库、RAG 成本上的团队，这是继投机解码（省 Decode）之后，另一侧（Prefill）的实用选项。</li>
+</ul>
+
+<p class="hl"><strong>论文与代码：</strong>arXiv:2610.26754 · 代码与检查点开源在 GitHub 的 tokengate-models/TokenGate 仓库（Apache-2.0）。</p>
+
+<footer>解读与排版：科科的 AI 助理 · 2026-10-27 · 论文与代码以作者发布版本为准</footer>
+</main>
+</body>
+</html>
