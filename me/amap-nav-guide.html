@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>一键导航页使用手记 · 高德唤起实践</title>
+<meta name="description" content="从聊天链接被拦截到页面卡片唤起高德：一键导航页的背景、模版与复用方法">
+<style>
+  :root {
+    --paper: #faf7f2; --paper-deep: #f3eee4;
+    --ink: #2d2a26; --ink-soft: #6f675e;
+    --red: #c8402e; --red-deep: #a33223;
+    --gold: #d9a441; --line: rgba(45,42,38,.14);
+  }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background: radial-gradient(1000px 460px at 50% -140px, rgba(200,64,46,.07), transparent 70%), var(--paper);
+    color: var(--ink); line-height: 1.85; font-size: 16.5px;
+    font-family: "PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans SC",sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 0 22px 80px; }
+  .cover { padding: 60px 0 26px; }
+  .kicker { font-size: 13px; letter-spacing: .42em; color: var(--red-deep); display:flex; align-items:center; gap:12px; }
+  .kicker::after { content:""; flex:1; height:1px; background: var(--line); }
+  h1 { font-family:"Songti SC","Noto Serif SC","SimSun",serif; font-weight:900; font-size: clamp(38px,9vw,54px); line-height:1.2; margin:20px 0 8px; }
+  .sub { color: var(--ink-soft); }
+  h2 { font-family:"Songti SC","Noto Serif SC",serif; font-size: 22px; margin: 46px 0 14px; display:flex; align-items:baseline; gap:10px; }
+  h2 .star { color: var(--red); font-size: 16px; }
+  h3 { font-size: 17px; margin: 22px 0 8px; color: var(--red-deep); }
+  p { margin: 10px 0; }
+  .muted { color: var(--ink-soft); font-size: 14.5px; }
+  ul, ol { padding-left: 22px; margin: 10px 0; }
+  li { margin: 6px 0; }
+  strong { color: var(--red-deep); font-weight: 600; }
+  code { background: var(--paper-deep); padding: 2px 7px; border-radius: 6px; font-size: 13.5px; font-family: "SF Mono", Menlo, Consolas, monospace; word-break: break-all; }
+  pre { background: #2d2a26; color: #f5efe4; border-radius: 12px; padding: 18px 20px; overflow-x: auto; margin: 14px 0; }
+  pre code { background: none; color: inherit; padding: 0; font-size: 13px; line-height: 1.75; }
+  table { border-collapse: collapse; width: 100%; margin: 14px 0; font-size: 14.5px; }
+  th, td { border: 1px solid var(--line); padding: 8px 12px; text-align: left; }
+  th { background: var(--paper-deep); font-weight: 600; }
+  .shot { margin: 18px 0; text-align: center; }
+  .shot img { max-width: 300px; width: 72%; border-radius: 18px; box-shadow: 0 14px 40px rgba(45,42,38,.18); }
+  .shot .cap { font-size: 13px; color: var(--ink-soft); margin-top: 10px; }
+  .card { background: var(--card, #fff); border: 1px solid var(--line); border-radius: 14px; padding: 16px 20px; margin: 16px 0; }
+  .footer { margin-top: 60px; padding-top: 18px; border-top: 1px solid var(--line); font-size: 13.5px; color: var(--ink-soft); }
+  .footer a { color: var(--red-deep); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="cover">
+    <div class="kicker">使用手记 · ME</div>
+    <h1>一键导航页，是怎么炼成的</h1>
+    <p class="sub">从"聊天链接全变下载页"到"点卡片一秒唤起高德"——一次把问题摸到底的记录，含模版与可直接复用的 Prompt。</p>
+  </div>
+
+  <h2><span class="star">★</span>问题：链接好好的，为什么打不开</h2>
+  <p>最初的需求很朴素：跟助理说一声目的地，手机上直接开始导航。结果在聊天里点 <code>uri.amap.com</code> 的导航链接，永远被带到一个"下载高德App"的页面。</p>
+  <p>原因后来摸清了：在支付宝里点任何链接，都会先进支付宝内置浏览器。这个浏览器<strong>不允许网页唤起其他App</strong>，高德的跳转链接自然全被拦下。聊天里换链接、换参数、换 <code>amapuri://</code> 协议头，都出不去这个房间。</p>
+
+  <h2><span class="star">★</span>实测结论</h2>
+  <table>
+    <tr><th>打开方式</th><th>结果</th></tr>
+    <tr><td>聊天内直接点 <code>uri.amap.com</code> 链接</td><td>被拦成下载页 ✗</td></tr>
+    <tr><td>聊天内点 <code>amapuri://</code> 协议链接</td><td>无法识别，无响应 ✗</td></tr>
+    <tr><td>系统浏览器（Safari）打开同一条链接</td><td>正常唤起高德 ✓</td></tr>
+    <tr><td><strong>页面卡片 → 点页内「网页版导航」按钮</strong></td><td><strong>正常唤起高德 ✓（最终采用）</strong></td></tr>
+  </table>
+  <p>结论：<strong>问题不在链接，在打开链接的容器。</strong>把链接装进一个独立网页、以卡片形式交付，让网页在系统浏览器里打开，跳转就通了。</p>
+
+  <h2><span class="star">★</span>方案：一键导航页</h2>
+  <p>做一个极简的单文件网页：大字目的地、一行地址、三个按钮。</p>
+  <ul>
+    <li><strong>开始驾车导航</strong>：<code>https://uri.amap.com/navigation?to={经度},{纬度},{URL编码名称}&amp;mode=car&amp;src=lingguang&amp;coordinate=gaode&amp;callnative=1</code></li>
+    <li><strong>公交/打车方案</strong>：同上，<code>mode=bus</code></li>
+    <li><strong>App直连（系统浏览器内有效）</strong>：<code>amapuri://route/plan/?dname={名称}&amp;dlon={经度}&amp;dlat={纬度}&amp;dev=0&amp;t=0</code></li>
+  </ul>
+  <p class="muted">注意：名称必须做 URL 编码（中文原样塞进链接会直接失效），坐标用高德 GCJ02。</p>
+
+  <div class="shot">
+    <img src="/images/nav-hongqiao-screenshot.jpg" alt="虹桥机场一键导航页实拍">
+    <div class="cap">虹桥机场版实拍 · 2026-10-27 上午</div>
+  </div>
+
+  <h2><span class="star">★</span>做成模版：换个目的地只要十秒</h2>
+  <p>把上面的页面抽成模版，留四个占位符，批量生产：</p>
+  <table>
+    <tr><th>占位符</th><th>含义</th><th>示例</th></tr>
+    <tr><td><code>{{NAME}}</code></td><td>目的地名称</td><td>上海虹桥国际机场</td></tr>
+    <tr><td><code>{{NAME_ENC}}</code></td><td>名称的 URL 编码</td><td><code>%E4%B8%8A%E6%B5%B7…</code></td></tr>
+    <tr><td><code>{{LNG}} / {{LAT}}</code></td><td>高德坐标</td><td>121.339775 / 31.196029</td></tr>
+    <tr><td><code>{{ADDR}}</code></td><td>一行地址</td><td>上海市长宁区虹桥路2550号</td></tr>
+  </table>
+  <p>生产流程固定三步：<strong>查坐标 → 套模版 → 发布成卡片</strong>。已跑通两个案例：蚂蚁S空间（浦东）、虹桥机场。</p>
+
+  <h2><span class="star">★</span>可复用 Prompt</h2>
+  <p>没有我的环境也行，把下面这段发给任何 AI 助手，改开头三行就能用：</p>
+  <pre><code>帮我做一个"一键唤起高德导航"的手机网页并交付文件卡片。
+目的地：{{名称}}，地址：{{地址}}，高德坐标(GCJ02)：{{经度}},{{纬度}}
+
+硬性要求：
+1. 单文件 HTML，手机全屏适配，深绿底白字、大按钮，不用任何外部依赖和JS。
+2. 页面含三个按钮：
+   - 主按钮"开始驾车导航"：https://uri.amap.com/navigation?to={{经度}},{{纬度}},{{URL编码的名称}}&amp;mode=car&amp;src=lingguang&amp;coordinate=gaode&amp;callnative=1
+   - 次按钮"公交/打车方案"：同上但 mode=bus
+   - 备用按钮"App直连"：amapuri://route/plan/?dname={{URL编码的名称}}&amp;dlon={{经度}}&amp;dlat={{纬度}}&amp;dev=0&amp;t=0
+3. 页面底部注明：需在Safari等系统浏览器打开，支付宝/微信内会被拦截。
+4. 背景原因：聊天内裸链接会被支付宝内置浏览器拦成下载页，必须走页面卡片。
+
+注意：URL编码后的名称不要中文原样塞进链接。</code></pre>
+
+  <h2><span class="star">★</span>一句话总结</h2>
+  <div class="card"><p><strong>别在聊天里赌链接，把链接装进页面里发。</strong>容器对了，高德一秒就醒。</p></div>
+
+  <div class="footer">
+    <p>整理于 2026-10-27 · 案例来自当天上午的实测往返 · <a href="/">← 回个人主页</a></p>
+  </div>
+</div>
+</body>
+</html>
