@@ -7,7 +7,7 @@
   var API = 'https://api.github.com/repos/zkk995/zkk995.github.io/contents/me';
   var TITLES = {
     'ai-two-days.html': '读读《我和AI的两天》手记',
-    'amap-nav-guide.html': '灵光内一键导航'
+    'amap-nav-guide.html': '灵光内唤醒高德导航'
   };
   var box = document.getElementById('me-list');
   if (!box) return;
