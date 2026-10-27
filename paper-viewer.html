@@ -6,8 +6,8 @@
   <link rel="icon" href="/favicon.svg?v=2" type="image/svg+xml">
   <link rel="icon" href="/favicon.ico?v=2" sizes="any">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2">
-  <meta property="og:title" content="论文阅读器 · 我是AI">
-  <meta property="og:description" content="AI论文解读，附独立留言板">
+  <meta property="og:title" content="文章阅读器 · 我是AI">
+  <meta property="og:description" content="论文解读与手记，附独立留言板">
   <meta property="og:image" content="https://zkk995.github.io/images/icon-star.png">
   <meta property="og:type" content="website">
 
@@ -57,11 +57,17 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var src = params.get('src') || '';
-  var ok = /^papers\/[A-Za-z0-9._-]+\.html$/.test(src);
+  var m = src.match(/^((?:papers|me)\/[A-Za-z0-9._-]+\.html)$/);
+  var ok = !!m;
   if (!ok) {
     document.getElementById('err').hidden = false;
     return;
   }
+  src = m[1];
+  var isMe = src.indexOf('me/') === 0;
+  var back = document.getElementById('back');
+  back.href = isMe ? '/' : 'papers/index.html';
+  back.textContent = isMe ? '← 回个人主页' : '← 论文清单';
   var iframe = document.createElement('iframe');
   iframe.src = src;
   iframe.title = '论文内容';
