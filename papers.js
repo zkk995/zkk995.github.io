@@ -99,7 +99,7 @@
           '" target="_blank" rel="noopener">原文</a>';
       }
       return '<a class="paper" href="' + (IN_PAPERS ? '../' : '')
-        + 'paper-viewer.html?src=papers/' + p.name + '">'
+        + 'viewer.html?src=papers/' + p.name + '">'
         + '<span class="p-tag">论文解读</span>'
         + '<div class="p-title">' + p.title + ' <span class="arrow">→</span></div>'
         + (meta ? '<div class="p-meta">' + meta + '</div>' : '')
