@@ -58,17 +58,17 @@
 (function () {
   var params = new URLSearchParams(location.search);
   var src = params.get('src') || '';
-  var m = src.match(/^((?:papers|me)\/[A-Za-z0-9._-]+\.html)$/);
+  var m = src.match(/^((?:papers|me|pandongzi-picture-book)\/[A-Za-z0-9._-]+\.html)$/);
   var ok = !!m;
   if (!ok) {
     document.getElementById('err').hidden = false;
     return;
   }
   src = m[1];
-  var isMe = src.indexOf('me/') === 0;
+  var isHome = src.indexOf('papers/') !== 0;
   var back = document.getElementById('back');
-  back.href = isMe ? '/' : 'papers/index.html';
-  back.textContent = isMe ? '← 回个人主页' : '← 论文清单';
+  back.href = isHome ? '/' : 'papers/index.html';
+  back.textContent = isHome ? '← 回个人主页' : '← 论文清单';
   var iframe = document.createElement('iframe');
   iframe.src = src;
   iframe.title = '论文内容';
