@@ -92,18 +92,8 @@
   s.setAttribute('data-repo-id', 'MDEwOlJlcG9zaXRvcnkyODA3Njg2MA==');
   s.setAttribute('data-category', 'General');
   s.setAttribute('data-category-id', 'DIC_kwDOAaxrPM4DJfoG');
-  // 页面路径 → Discussions 帖号映射表；命中则按帖号直查（绕开搜索计数异常），未命中回退按路径搜索
-  var DISCUSSION_NUMBERS = {
-    'papers/thinkingbox-training.html': '2',
-    'me/ai-two-days.html': '4'
-  };
-  if (DISCUSSION_NUMBERS[src]) {
-    s.setAttribute('data-mapping', 'number');
-    s.setAttribute('data-term', DISCUSSION_NUMBERS[src]);
-  } else {
-    s.setAttribute('data-mapping', 'specific');
-    s.setAttribute('data-term', src);
-  }
+  s.setAttribute('data-mapping', 'specific');
+  s.setAttribute('data-term', src);
   s.setAttribute('data-strict', '1');
   s.setAttribute('data-reactions-enabled', '1');
   s.setAttribute('data-emit-metadata', '0');
