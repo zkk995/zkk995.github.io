@@ -1,6 +1,12 @@
 {
-  "updated": "2026-10-27",
+  "updated": "2026-10-31",
   "papers": [
+    {
+      "file": "papers/block-verify-2403.10444.html",
+      "title": "Block Verification 论文解读：把投机解码的“逐 token 验收”改成“整块联合验收”",
+      "arxiv": "2403.10444",
+      "date": "2026-10-31T11:49:43+08:00"
+    },
     {
       "file": "papers/tokengate-2610.26754.html",
       "title": "TokenGate 论文解读：让模型学会“略读”，长文档 Prefill 提速 11.3 倍",
