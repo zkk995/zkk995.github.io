@@ -3,9 +3,9 @@
   "papers": [
     {
       "file": "papers/dspine-2609.36173.html",
-      "title": "DSpine 论文解读：把相邻因果注入铺满整个草稿模型，并行起草不再各猜各的",
+      "title": "DSpine 论文解读：把相邻因果注入铺满整个草稿模型",
       "arxiv": "2609.36173",
-      "date": "2026-11-01T16:50:00+08:00"
+      "date": "2026-11-01T16:54:22+08:00"
     },
     {
       "file": "papers/block-verify-2403.10444.html",
