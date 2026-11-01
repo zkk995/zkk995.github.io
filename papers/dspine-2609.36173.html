@@ -20,7 +20,9 @@ h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
 p{margin:10px 0}
 ul{padding-left:22px;margin:10px 0}
 li{margin:6px 0}
-.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:14.5px;overflow-x:auto}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14.5px;overflow-x:auto}
+math{overflow-x:auto}
+mrow{font-style:normal}
 .note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
 table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
 th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
@@ -50,7 +52,9 @@ Haohui Zhang 等 7 人 · 腾讯 · <a href="https://arxiv.org/abs/2609.36173" t
 <section>
 <h2>1 · 背景：并行起草的「一致性债」</h2>
 <p>投机解码里，自回归草稿（EAGLE 系）每个 token 等前一个定稿，因果对但慢；DFlash 用轻量块扩散模型一次前向把整块 16 个位置全猜出来，快但每个位置只能「边缘化」掉前驱的不确定性——单个合理的 token 拼成不一致的句子。验证按前缀顺序接受，一处断裂就截掉后面整段，<strong>白起草的块大量作废</strong>。</p>
-<p>现有三条修补路线——Domino 的因果修正分支、DSpark 的顺序头、DFlash2 的路径选择器——全在主干<strong>之后</strong>工作，且只传最后一层的词表分布。主干内部五层算出来的丰富中间特征，一条都没用上。</p>
+<p>能不能快，取决于每轮平均推进多少 token。设接受长度为 τ，每轮耗时约等于草稿加验证，则每个输出 token 的平均耗时近似为：
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mrow><mi mathvariant="normal">T</mi><mi mathvariant="normal">P</mi><mi mathvariant="normal">O</mi><mi mathvariant="normal">T</mi></mrow><mtext>spec</mtext></msub><mo>≈</mo><mfrac><mrow><msub><mi>T</mi><mtext>draft</mtext></msub><mo>+</mo><msub><mi>T</mi><mtext>verify</mtext></msub></mrow><mi>τ</mi></mfrac></mrow><annotation encoding="application/x-tex">\mathrm{TPOT}_{\text{spec}} \approx \frac{T_{\text{draft}} + T_{\text{verify}}}{\tau}</annotation></semantics></math>
+τ 越大越快，而验证成本对各家基本相同，所以竞争全在「把 τ 做高、把草稿做便宜」上。现有三条修补路线——Domino 的因果修正分支、DSpark 的顺序头、DFlash2 的路径选择器——全在主干<strong>之后</strong>工作，且只传最后一层的词表分布。主干内部五层算出来的丰富中间特征，一条都没用上。</p>
 </section>
 
 <section>
@@ -66,14 +70,21 @@ Haohui Zhang 等 7 人 · 腾讯 · <a href="https://arxiv.org/abs/2609.36173" t
 <section>
 <h2>3 · 方法：四个组件</h2>
 <h3>3.1 统一传递空间</h3>
-<p>拿目标模型 LM 头的输出嵌入做 ℓ2 归一化 → PCA 白化 → 保留 r 个主方向 → 再归一化，得到固定码本 C。白化去掉所有 token 共享的分量，让 C 里的方向能区分 token。妙处：<strong>「还没定的预测特征」和「已定稿的 token 嵌入」在这个空间里形式完全一样</strong>——一条通路两用，主干里传预测特征，解码时传定稿 token，不需要任何新模块。</p>
+<p>拿目标模型 LM 头的输出嵌入做 ℓ2 归一化 → PCA 白化 → 保留 r 个主方向 → 再归一化，得到固定码本 C。每层的预测特征经各自的低秩投影进入这个空间（不做中间词表解码）：
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>z</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>=</mo><msub><mi>f</mi><mi mathvariant="normal">ℓ</mi></msub><mo stretchy="false">(</mo><msub><mi>u</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><msqrt><mi>r</mi></msqrt><mtext> </mtext><mi mathvariant="normal">normalize</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>R</mi><mi mathvariant="normal">ℓ</mi></msub><mtext> </mtext><msub><mi>u</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">z_{\ell,t} = f_{\ell}(u_{\ell,t}) = \sqrt{r}\,\operatorname{normalize}\!\left(R_{\ell}\, u_{\ell,t}\right)</annotation></semantics></math>
+白化去掉所有 token 共享的分量，让 C 里的方向能区分 token。妙处：<strong>「还没定的预测特征」和「已定稿的 token 嵌入」在这个空间里形式完全一样</strong>——一条通路两用，主干里传预测特征，解码时传定稿 token，不需要任何新模块。</p>
 <h3>3.2 门控相邻注入 + 块内因果注意力</h3>
-<div class="formula">g = σ(G_q·z_t + G_p·z_{t-1} + b)&nbsp;&nbsp;&nbsp;h = u_t + RMS(u_t)·W(g ⊙ A·z_{t-1})</div>
+<p>门控与残差写回（式 4、5）：</p>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>g</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>=</mo><mi>σ</mi><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>G</mi><mi>q</mi></msub><msub><mi>z</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>+</mo><msub><mi>G</mi><mi>p</mi></msub><msub><mi>z</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo>+</mo><mi>b</mi><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">g_{\ell,t} = \sigma\!\left(G_q z_{\ell,t} + G_p z_{\ell,t-1} + b\right)</annotation></semantics></math>
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>h</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>=</mo><msub><mi>u</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>+</mo><mi mathvariant="normal">RMS</mi><mo>⁡</mo><mo stretchy="false">(</mo><msub><mi>u</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>W</mi><mi mathvariant="normal">ℓ</mi></msub><mrow><mo fence="true">(</mo><msub><mi>g</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>⊙</mo><mi>A</mi><msub><mi>z</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">h_{\ell,t} = u_{\ell,t} + \operatorname{RMS}(u_{\ell,t})\, W_{\ell}\left(g_{\ell,t} \odot A z_{\ell,t-1}\right)</annotation></semantics></math>
+
 <p>每层过后，位置 t 只收位置 t-1 的消息，门控由收发双方共同决定吸收多少，残差写回。A、G_q、G_p、b 跨层共享，写回矩阵 W 每层独立；所有消息用更新前的特征，同层注入完全并行。注意力从 DFlash 的块内双向改成<strong>块内因果</strong>——位置 t 只看上下文和 0…t，与注入方向一致，训练时正确信息不会倒流污染前面的位置。</p>
 <h3>3.3 过渡缓存：把串行解码搬平</h3>
 <p>解码端每个位置要以前驱<strong>实际选中</strong>的 token 为条件，直接算是串行的。DSpine 先把每对相邻候选（K=16）的转移分数全部并行预计算成 K×K 查找表 T[i,j]，之后选 token 纯查表、零串行矩阵运算。这一步成本不到 DSpark、Domino 后置头的<strong>一半</strong>。</p>
 <h3>3.4 逐层嵌入对齐监督</h3>
-<p>训练时要求每层预测特征在方向上对齐正确 token 的嵌入（cos 相似度，带位置衰减权重），loss 是 DSpark 式的 CE + 概率 L1 混合；早期前驱特征不可靠，按概率替换成正确 token 嵌入再逐渐退出（scheduled sampling 思路）。一个反直觉的消融结论：<strong>逐层全词表交叉熵监督反而不如不监督</strong>——硬逼中间层做分类会干扰后面层的上下文计算，只约束低维投影方向才是对的。</p>
+<p>训练目标是分布损失（DSpark 式的 token 交叉熵 + 概率 L1 混合）加逐层嵌入对齐项（式 6–8）：
+<math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi mathvariant="script">L</mi><mo>=</mo><msub><mi mathvariant="script">L</mi><mtext>dist</mtext></msub><mo>+</mo><mi>λ</mi><mtext> </mtext><msub><mi mathvariant="script">L</mi><mtext>emb</mtext></msub><mo separator="true">,</mo><mspace width="2em"/><msub><mi mathvariant="script">L</mi><mtext>emb</mtext></msub><mo>=</mo><munderover><mo>∑</mo><mrow><mi mathvariant="normal">ℓ</mi><mo>=</mo><mn>1</mn></mrow><mi>L</mi></munderover><munder><mo>∑</mo><mi>i</mi></munder><msub><mi>w</mi><mi>i</mi></msub><mrow><mo fence="true">[</mo><mn>1</mn><mo>−</mo><mi>cos</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><msub><mi>e</mi><mrow><mi mathvariant="normal">ℓ</mi><mo separator="true">,</mo><mi>i</mi></mrow></msub><mo separator="true">,</mo><mtext> </mtext><msub><mi>C</mi><msub><mi>y</mi><mi>i</mi></msub></msub><mo fence="true">)</mo></mrow><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L} = \mathcal{L}_{\text{dist}} + \lambda\, \mathcal{L}_{\text{emb}}, \qquad \mathcal{L}_{\text{emb}} = \sum_{\ell=1}^{L}\sum_{i} w_i\left[1 - \cos\!\left(e_{\ell,i},\, C_{y_i}\right)\right]</annotation></semantics></math>
+<p>其中嵌入对齐项要求每层预测特征在方向上对齐正确 token 的嵌入（cos 相似度，带位置衰减权重）；早期前驱特征不可靠，按概率替换成正确 token 嵌入再逐渐退出（scheduled sampling 思路）。一个反直觉的消融结论：<strong>逐层全词表交叉熵监督反而不如不监督</strong>——硬逼中间层做分类会干扰后面层的上下文计算，只约束低维投影方向才是对的。</p>
 </section>
 
 <section>
