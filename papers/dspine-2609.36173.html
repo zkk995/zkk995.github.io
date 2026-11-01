@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSpine 论文解读：把相邻因果注入铺满整个草稿模型</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-family:ui-monospace,'SF Mono',Consolas,monospace;font-size:14.5px;overflow-x:auto}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 180px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">推理加速</span><span class="tag">投机解码</span><span class="tag">并行草稿</span><span class="tag">腾讯</span>
+<h1>DSpine：把相邻因果注入铺满整个草稿模型，并行起草不用再「各猜各的」</h1>
+<p class="meta">Draft in Parallel, Condition Through Depth: Adjacent Causal Injection for Speculative Decoding<br>
+Haohui Zhang 等 7 人 · 腾讯 · <a href="https://arxiv.org/abs/2609.36173" target="_blank" rel="noopener">arXiv:2609.36173</a> v1 2026-09-28 / v2 2026-10-10</p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>并行草稿的所有位置在「前驱还没定」时就要预测，拼起来经常不成句；现有修补都放在主干出口打补丁。DSpine 把条件化搬进主干<strong>每一层</strong>——每层每个位置接收前一个位置当前预测的特征，因果链沿网络深度展开、位置仍全部并行算。Qwen3-8B 七基准平均接受长度 4.82，比 DFlash2（4.39）高 10%，SGLang 吞吐高 11.1%，轮均成本几乎不变。</div>
+
+<section>
+<h2>1 · 背景：并行起草的「一致性债」</h2>
+<p>投机解码里，自回归草稿（EAGLE 系）每个 token 等前一个定稿，因果对但慢；DFlash 用轻量块扩散模型一次前向把整块 16 个位置全猜出来，快但每个位置只能「边缘化」掉前驱的不确定性——单个合理的 token 拼成不一致的句子。验证按前缀顺序接受，一处断裂就截掉后面整段，<strong>白起草的块大量作废</strong>。</p>
+<p>现有三条修补路线——Domino 的因果修正分支、DSpark 的顺序头、DFlash2 的路径选择器——全在主干<strong>之后</strong>工作，且只传最后一层的词表分布。主干内部五层算出来的丰富中间特征，一条都没用上。</p>
+</section>
+
+<section>
+<h2>2 · 两个探针实验：信息从哪来、什么时候给</h2>
+<p>方法之前，作者先用冻结的 DFlash 做了两组探针实验（给每层配等容量低秩读出器来解码中间状态），得到整个设计的两条依据：</p>
+<ul>
+<li><strong>发现一：浅层已有「可恢复」的预测。</strong>同样的浅层深度，靠前位置的读出准确率远高于靠后位置——前缀的预测信息在很浅的地方就成形了，来得及在 successors 还在算的时候就递过去；</li>
+<li><strong>发现二：前驱信息「进得早」比「进得多」更值钱。</strong>三组数字：把相邻前驱换成草稿预测（即使更早历史全对），后继准确率平均掉 <strong>31.8 个百分点</strong>——相邻前驱带有更早历史替代不了的线索；固定注入总次数、只挪位置，早注入比晚注入相对增益 1.2% → 4.3%；同样的前驱 K/V，早喂比晚喂后继准确率平均高 <strong>14.8 个点</strong>。</li>
+</ul>
+<p class="note">结论：信息来源 = 相邻前驱；注入时机 = 从第一层开始。二者共同否定了「出口补丁」式设计。</p>
+</section>
+
+<section>
+<h2>3 · 方法：四个组件</h2>
+<h3>3.1 统一传递空间</h3>
+<p>拿目标模型 LM 头的输出嵌入做 ℓ2 归一化 → PCA 白化 → 保留 r 个主方向 → 再归一化，得到固定码本 C。白化去掉所有 token 共享的分量，让 C 里的方向能区分 token。妙处：<strong>「还没定的预测特征」和「已定稿的 token 嵌入」在这个空间里形式完全一样</strong>——一条通路两用，主干里传预测特征，解码时传定稿 token，不需要任何新模块。</p>
+<h3>3.2 门控相邻注入 + 块内因果注意力</h3>
+<div class="formula">g = σ(G_q·z_t + G_p·z_{t-1} + b)&nbsp;&nbsp;&nbsp;h = u_t + RMS(u_t)·W(g ⊙ A·z_{t-1})</div>
+<p>每层过后，位置 t 只收位置 t-1 的消息，门控由收发双方共同决定吸收多少，残差写回。A、G_q、G_p、b 跨层共享，写回矩阵 W 每层独立；所有消息用更新前的特征，同层注入完全并行。注意力从 DFlash 的块内双向改成<strong>块内因果</strong>——位置 t 只看上下文和 0…t，与注入方向一致，训练时正确信息不会倒流污染前面的位置。</p>
+<h3>3.3 过渡缓存：把串行解码搬平</h3>
+<p>解码端每个位置要以前驱<strong>实际选中</strong>的 token 为条件，直接算是串行的。DSpine 先把每对相邻候选（K=16）的转移分数全部并行预计算成 K×K 查找表 T[i,j]，之后选 token 纯查表、零串行矩阵运算。这一步成本不到 DSpark、Domino 后置头的<strong>一半</strong>。</p>
+<h3>3.4 逐层嵌入对齐监督</h3>
+<p>训练时要求每层预测特征在方向上对齐正确 token 的嵌入（cos 相似度，带位置衰减权重），loss 是 DSpark 式的 CE + 概率 L1 混合；早期前驱特征不可靠，按概率替换成正确 token 嵌入再逐渐退出（scheduled sampling 思路）。一个反直觉的消融结论：<strong>逐层全词表交叉熵监督反而不如不监督</strong>——硬逼中间层做分类会干扰后面层的上下文计算，只约束低维投影方向才是对的。</p>
+</section>
+
+<section>
+<h2>4 · 实验：全基准领先，成本几乎没涨</h2>
+<p>Qwen3-4B / 8B，所有草稿模型在同一份 ShareGPT 数据（目标模型重生成回复）上重训：5 层主干、block 16、6 个 epoch。七基准平均接受长度 τ（论文口径，含修正 token）：</p>
+<table>
+<tr><th>Qwen3-8B</th><th>GSM8K</th><th>MATH-500</th><th>HumanEval</th><th>LCB</th><th>MT-Bench</th><th>Arena-Hard</th><th>平均 T=0 / T=1</th></tr>
+<tr><td>DFlash</td><td>4.25</td><td>4.23</td><td>3.92</td><td>3.53</td><td>3.27</td><td>3.30</td><td>3.77 / 3.39</td></tr>
+<tr><td>Domino</td><td>4.83</td><td>4.81</td><td>4.21</td><td>3.90</td><td>3.58</td><td>3.61</td><td>4.18 / 3.69</td></tr>
+<tr><td>DSpark</td><td>4.99</td><td>4.90</td><td>4.43</td><td>4.01</td><td>3.69</td><td>3.69</td><td>4.32 / 3.92</td></tr>
+<tr><td>DFlash2</td><td>5.03</td><td>5.10</td><td>4.43</td><td>4.09</td><td>3.71</td><td>3.82</td><td>4.39 / 3.90</td></tr>
+<tr><td class="hl">DSpine</td><td class="hl">5.67</td><td class="hl">5.49</td><td class="hl">4.94</td><td class="hl">4.46</td><td class="hl">4.11</td><td class="hl">4.12</td><td class="hl">4.82 / 4.42</td></tr>
+</table>
+<ul>
+<li><strong>接受长度</strong>：所有基准、两种温度全场第一；T=0 领先最强基线 DFlash2 10.0%，T=1 领先 DSpark 12.8%——<strong>采样场景优势反而更大</strong>，因为串行依赖缺失在采样下更致命，深度注入的修正价值更明显；</li>
+<li><strong>吞吐</strong>：SGLang 实测（T=0，并发 2–32）每个任务、每个并发档位第一，比 DFlash2 平均高 11.1%，对自回归解码最高 4.0×；</li>
+<li><strong>成本</strong>：逐层注入每轮最多加 0.15ms；整轮 7.14ms vs DFlash2 的 7.19ms 基本持平。因为每轮接受更多，摊到每个生成 token 的解码时间反而少 10.9%——<strong>加速没付延迟代价</strong>；</li>
+<li><strong>消融</strong>：去掉解码端 last-write 精修掉 6.6–7.1%，再把主干内注入去掉共掉 8.8–10.7%，两组件贡献互补。</li>
+</ul>
+</section>
+
+<section>
+<h2>5 · 值得注意的点</h2>
+<ul>
+<li><strong>两套数字别混着比</strong>：论文表 1（ShareGPT 重训、τ 含修正，均值 4.82）和 HF 模型卡（Open-PerfectBlend 重训，均值 7.83 vs DFlash2 7.55）是两个口径，结论方向一致但幅度不能互换；</li>
+<li><strong>对 DFlash 的 +27.8% 是对老基线</strong>，对最新 DFlash2 的真实差距是 10% 左右——依然是清晰领先，但没标题那么夸张；</li>
+<li><strong>局限</strong>：只有 Qwen3-4B/8B 结果，训练代码未开源（权重已放，Apache 2.0），数字全部作者自报未第三方复现，且依赖 SGLang 里的融合核与过渡缓存实现，换引擎要重新接。</li>
+</ul>
+<p>整体看，这是「并行草稿如何建立位置依赖」这条线上目前最彻底的答案：别家在主干出口打补丁，它把条件化铺满整个网络深度，而且每个设计决策都有对应的探针实验撑着，论证链条扎实。论文结尾留了个方向：层内传递现在只到相邻一个位置，更灵活的通信范围可能还有空间——值得跟。</p>
+</section>
+
+<footer>
+解读时间：2026-11-01 · 解读：灵光（受托代读）· 原文：<a href="https://arxiv.org/abs/2609.36173" target="_blank" rel="noopener">arXiv:2609.36173</a>（腾讯，配套权重 tencent/Qwen3-8B-DSpine-b16）<br>
+更多解读见 <a href="/papers/" target="_blank" rel="noopener">papers/ 索引</a>
+</footer>
+
+</div>
+</body>
+</html>

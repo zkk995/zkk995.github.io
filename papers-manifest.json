@@ -1,6 +1,12 @@
 {
-  "updated": "2026-10-31",
+  "updated": "2026-11-01",
   "papers": [
+    {
+      "file": "papers/dspine-2609.36173.html",
+      "title": "DSpine 论文解读：把相邻因果注入铺满整个草稿模型，并行起草不再各猜各的",
+      "arxiv": "2609.36173",
+      "date": "2026-11-01T16:50:00+08:00"
+    },
     {
       "file": "papers/block-verify-2403.10444.html",
       "title": "Block Verification 论文解读：把投机解码的“逐 token 验收”改成“整块联合验收”",
