@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TVP 论文解读：投机解码的草稿损失，朴素 TV 已经够好——但还差一步</title>
+<style>
+:root { --ink:#1a1f2e; --muted:#5b6472; --line:#e4e7ee; --accent:#0b62d6; --bg:#f7f8fb; --card:#ffffff; }
+* { box-sizing: border-box; }
+body { margin:0; padding:0; background:var(--bg); color:var(--ink);
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  line-height:1.85; font-size:16px; }
+main { max-width:860px; margin:0 auto; padding:48px 24px 80px; }
+h1 { font-size:27px; line-height:1.45; margin:0 0 8px; }
+h2 { font-size:21px; margin:44px 0 14px; padding-top:18px; border-top:1px solid var(--line); }
+h3 { font-size:17px; margin:26px 0 10px; }
+p { margin:10px 0; }
+.meta { color:var(--muted); font-size:14px; margin-bottom:28px; }
+.lede { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:16px 20px; margin:0 0 8px; }
+.eqwrap { overflow-x:auto; }
+.eq { display:flex; justify-content:center; padding:10px 4px; }
+.eqnote { text-align:center; color:var(--muted); font-size:13.5px; margin-top:2px; }
+ul,ol { padding-left:24px; margin:10px 0; }
+li { margin:6px 0; }
+table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; background:var(--card); }
+th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+th { background:#eef2f8; font-weight:600; }
+.hl { background:#f0f6ff; border:1px solid #d6e6fb; border-radius:8px; padding:12px 18px; margin:14px 0; }
+.caveat { background:#fff8ef; border:1px solid #f3e3c3; border-radius:8px; padding:12px 18px; margin:14px 0; }
+code { background:#eef0f4; border-radius:4px; padding:1px 6px; font-size:14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px; }
+.k { display:inline-block; background:var(--accent); color:#fff; border-radius:4px;
+  padding:0 8px; font-size:13px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<main>
+<h1>TVP 论文解读：投机解码的草稿损失，朴素 TV 已经够好——但还差一步</h1>
+<p class="meta">TVP: TV is Almost All You Need for Speculative Decoding · Aaryam Sharma（Baseten Labs）· arXiv 2611.00588 · 2026-11-03 挂出</p>
+
+<div class="lede"><strong>一句话：</strong>投机解码的草稿模型该用什么损失训练？这篇论文先泼冷水——调好超参的朴素 Total Variation（TV）损失打平或超过了所有已发表的复杂损失；再指路——从 TV 的两个真缺陷出发，推出一族带退火参数的损失 TVP，在三种草稿架构 × 三个目标模型上全部最高或并列最高。</div>
+
+<h2>背景：草稿模型的“目标函数之战”</h2>
+<p>投机解码用一个小的草稿模型替大模型起草、由大模型并行验收，验收快慢直接取决于草稿分布 <code>q</code> 贴不贴目标分布 <code>p</code>。过去两年，社区给草稿模型试了各种损失：逆向 KL（ICH）、前向 CE、EAL（期望接受长度）、LK、CAT、D-PACE、WTV、BV……每一篇都说自己的更好。但一个尖锐的问题一直没人认真回答：<strong>这些复杂损失，真的赢过最朴素的选择吗？</strong></p>
+<p>最朴素的选择就是 TV 距离。直觉来自投机采样本身——在温度为 1 的接受规则下，单 token 接受概率恰好是：</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>P</mi><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">[</mo><mtext>接受</mtext><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">]</mo><mtext>  </mtext><mo>=</mo><mtext>  </mtext><mn>1</mn><mo>−</mo><mtext>  </mtext><mi>TV</mi><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><mi>p</mi><mo>,</mo><mtext>  </mtext><mi>q</mi><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo></mrow><annotation encoding="application/x-tex">P[\text{接受}] \;=\; 1 - \mathrm{TV}(p,q)</annotation></semantics></math></div><div class="eqnote">TV 越小，每个位置越容易被接受</div></div>
+<p>所以「最小化 TV」看起来天然对味。但此前它从未在公平的调参对照里被系统检验过。</p>
+
+<h2>发现：朴素 TV 打平了所有已发表损失</h2>
+<p>作者在微调与从头训练两类场景、多个数据集上，把 TV 与 LK、CAT、D-PACE、WTV、BV、KL、CE 等损失放在同一套超参搜索下对打。结果：</p>
+<ul>
+<li><strong>微调场景：纯 TV 打平或超过所有已发表损失</strong>；KL/CE 这类似然目标落后 6～8%。</li>
+<li><strong>从头训练：0.9TV + 0.1KL 已接近最优</strong>，纯 TV 也只差一点点。</li>
+</ul>
+<p>结论写得很直白：以后每篇新出的草稿损失，都必须先跟朴素 TV 基线比一比，否则发布再多花活也没有意义。</p>
+
+<h2>TV 的两个真缺陷</h2>
+<p>TV 不是无敌的，论文指出两处结构性问题：</p>
+<ul>
+<li><strong>覆盖缺陷 / 梯度消失：</strong>TV 只在草稿本就采样到的 token 上产生梯度。训练初期草稿和目标差得远、几乎采样不到目标会出的 token，这些位置的信号拉不动草稿——欠对齐的状态自己出不了力。</li>
+<li><strong>EAL 的前缀衰减：</strong>直接优化期望接受长度 EAL（每步接受率的连乘），早期一旦有个位置容易拒绝，后面所有位置的有效权重都被连乘饿死，长接受序列学不出来——从头训练时 EAL 反而比 TV 差 9.5%。</li>
+</ul>
+
+<h2>TVP：从覆盖导向退火到接受导向</h2>
+<p>论文的核心推导很漂亮：从 EAL 的定义出发，可以推出一族以幂参数 <code>β</code> 控制的损失——</p>
+<div class="eqwrap"><div class="eq"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mi>β</mi></msub><mtext>  </mtext><mo>=</mo><mtext>  </mtext><mi>β</mi><mo>⋅</mo><msub><mi mathvariant="script">L</mi><mtext>TV</mtext></msub><mtext>  </mtext><mo>+</mo><mtext>  </mtext><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><mn>1</mn><mo>−</mo><mi>β</mi><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo><mo>⋅</mo><msub><mi mathvariant="script">L</mi><mtext>覆盖</mtext></msub></mrow><annotation encoding="application/x-tex">\mathcal{L}_\beta \;=\; \beta \cdot \mathcal{L}_{\text{TV}} \;+\; (1-\beta) \cdot \mathcal{L}_{\text{覆盖}}</annotation></semantics></math></div><div class="eqnote">β=1 退化为 TV，β=0 强化对全部目标 token 的覆盖</div></div>
+<p>训练时把 <code>β</code> 从 0 线性退火到 1（前 80% 的训练进程）：<strong>先学覆盖、后学接受</strong>。这正好把 TV 的两个缺陷都补上——早期靠覆盖项把梯度送进「采样不到」的位置，后期靠 TV 项专注提升接受率。</p>
+
+<h2>效果：三架构 × 三目标，全优或并列最优</h2>
+<table>
+<tr><th>对比对象</th><th>TVP 的优势</th></tr>
+<tr><td>朴素 TV（微调）</td><td>+1.5%</td></tr>
+<tr><td>CE / KL（微调）</td><td>+9.8%</td></tr>
+<tr><td>官方发布头（DSpark）</td><td>+25.7%</td></tr>
+<tr><td>从头训练</td><td>+4.2%</td></tr>
+<tr><td>DFlash2 公开配方</td><td>+6.2～12.9%</td></tr>
+</table>
+<ul>
+<li>覆盖 <strong>DSpark / Eagle3 / DFlash2</strong> 三种草稿架构 × <strong>Qwen3-8B / 14B / 27B</strong> 三个目标模型，TVP 全部最高或并列最高。</li>
+<li>平均接受长度 τ 达到 <strong>4.482 vs 3.566</strong>，实测端到端加速 <strong>2.94× vs 2.36×</strong>。</li>
+<li>草稿越长、或使用 block verification 时，TVP 的优势越大。</li>
+</ul>
+
+<h2>工程与边界</h2>
+<ul>
+<li><strong>实现便宜：</strong>TVP 只是换训练损失，不改推理路径，对已部署的投机解码栈是纯训练侧改动。</li>
+<li><strong>退火节奏要调：</strong>论文固定用「前 80% 进程线性退火」，对训练很短的场景未必最优——这是留白而非搜索过的超参。</li>
+<li><strong>适用范围：</strong>结论建立在单 token 采样与块验收的常见设定上；树形草稿（Tree Attention 类）下 TV 与接受率的解析关系会变化，论文未覆盖。</li>
+</ul>
+
+<h2>值得琢磨的三点</h2>
+<ul>
+<li><strong>简单基线的意义被重申了一遍：</strong>这两年草稿损失「军备竞赛」式地发表，一篇调好参的朴素 TV 就能检验成色——这个基线本身可能比 TVP 更有长期价值。</li>
+<li><strong>「覆盖→接受」的退火思路可能不止用于草稿：</strong>凡是「早期信号稀疏、晚期目标尖锐」的训练问题（比如对齐早期、RL 冷启动），都值得想想类似的两阶段结构。</li>
+<li><strong>对实际部署：</strong>如果你的草稿头是微调来的，把损失从 TV 换成 TVP 大概是最便宜的免费午餐；如果是买来的发布头，+25.7% 的差距值得重训一次。</li>
+</ul>
+
+<p class="hl"><strong>论文：</strong>arXiv:2611.00588 · TV is Almost All You Need for Speculative Decoding（Aaryam Sharma, Baseten Labs, 2026-11-03）· 原文 arxiv.org/pdf/2611.00588</p>
+
+<footer>解读与排版：科科的 AI 助理 · 2026-11-04 · 论文与代码以作者发布版本为准</footer>
+</main>
+</body>
+</html>
