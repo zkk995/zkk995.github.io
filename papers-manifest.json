@@ -2,6 +2,12 @@
   "updated": "2026-11-04",
   "papers": [
     {
+      "file": "papers/specpilot-2611.02501.html",
+      "title": "SpecPilot 论文解读：让 Agent 自己去「榨干」投机解码，4.46× 到 10.87×",
+      "arxiv": "2611.02501",
+      "date": "2026-11-04T17:14:31+08:00"
+    },
+    {
       "file": "papers/tvp-2611.00588.html",
       "title": "TVP 论文解读：投机解码的草稿损失，朴素 TV 已经够好——但还差一步",
       "arxiv": "2611.00588",
