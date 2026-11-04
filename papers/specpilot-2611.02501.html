@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SpecPilot 论文解读：让 Agent 自己去「榨干」投机解码，4.46× 到 10.87×</title>
+<style>
+:root { --ink:#1a1f2e; --muted:#5b6472; --line:#e4e7ee; --accent:#0b62d6; --bg:#f7f8fb; --card:#ffffff; }
+* { box-sizing: border-box; }
+body { margin:0; padding:0; background:var(--bg); color:var(--ink);
+  font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  line-height:1.85; font-size:16px; }
+main { max-width:860px; margin:0 auto; padding:48px 24px 80px; }
+h1 { font-size:27px; line-height:1.45; margin:0 0 8px; }
+h2 { font-size:21px; margin:44px 0 14px; padding-top:18px; border-top:1px solid var(--line); }
+h3 { font-size:17px; margin:26px 0 10px; }
+p { margin:10px 0; }
+.meta { color:var(--muted); font-size:14px; margin-bottom:28px; }
+.lede { background:var(--card); border:1px solid var(--line); border-left:4px solid var(--accent);
+  border-radius:8px; padding:16px 20px; margin:0 0 8px; }
+.eqwrap { overflow-x:auto; }
+.eq { display:flex; justify-content:center; padding:10px 4px; }
+.eqnote { text-align:center; color:var(--muted); font-size:13.5px; margin-top:2px; }
+ul,ol { padding-left:24px; margin:10px 0; }
+li { margin:6px 0; }
+table { border-collapse:collapse; width:100%; margin:14px 0; font-size:14.5px; background:var(--card); }
+th,td { border:1px solid var(--line); padding:8px 12px; text-align:left; }
+th { background:#eef2f8; font-weight:600; }
+.hl { background:#f0f6ff; border:1px solid #d6e6fb; border-radius:8px; padding:12px 18px; margin:14px 0; }
+.caveat { background:#fff8ef; border:1px solid #f3e3c3; border-radius:8px; padding:12px 18px; margin:14px 0; }
+code { background:#eef0f4; border-radius:4px; padding:1px 6px; font-size:14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+footer { margin-top:48px; padding-top:16px; border-top:1px solid var(--line); color:var(--muted); font-size:13.5px; }
+.k { display:inline-block; background:var(--accent); color:#fff; border-radius:4px;
+  padding:0 8px; font-size:13px; vertical-align:1px; }
+</style>
+</head>
+<body>
+<main>
+<h1>SpecPilot 论文解读：让 Agent 自己去「榨干」投机解码，4.46× 到 10.87×</h1>
+<p class="meta">SpecPilot: Autonomous Algorithm Discovery and Systems Optimization for Speculative Decoding · Kunjun Li、Wenhao Chai 等（UC Berkeley / Princeton / Stanford / NVIDIA）· arXiv 2611.02501 · 2026-11-02 挂出</p>
+
+<div class="lede"><strong>一句话：</strong>并行草稿投机解码的发布系统（stock）远没跑满理论空间。这篇论文让一个自主 Agent 循环替人类做系统优化——成本模型定位差距、并行 Agent 探索、token 级防作弊验收、结构化记忆沉淀复用——<strong>不训练、不损失质量</strong>，把单请求加速从 stock 的 4.46× 提到 <strong>10.87×</strong>，批处理从 1.94× 提到 <strong>3.93×</strong>。</div>
+
+<h2>背景：并行草稿的加速，到底丢在哪了</h2>
+<p>投机解码用一个轻量草稿模型替大模型起草、由大模型并行验收；并行草稿器（DFlash2、DSpark 这类）更进一步，一次前向就起草一整块。问题是：这些发布出来的系统，真的吃满了并行草稿该给的速度吗？论文的回答是没有，而且丢速度的方式分三种场景：</p>
+<ul>
+<li><strong>单请求：每步读光全部权重，却只收下几个 token。</strong>Qwen3.8-27B 在 H100 上，最终系统一步 23.61ms 里读目标权重占 80%；就算把验证行数从 1 行堆到 64 行，GEMM 时间只从 17.88ms 涨到 18.58ms——<strong>多验几乎免费，少收才是浪费</strong>。而 stock 的 8 位草稿链平均每步只接受 4.25 个 token。</li>
+<li><strong>批处理：验证开销把加速「摊薄」。</strong>每个请求都要付递归态和注意力的成本，FP8 的 Qwen3.8-27B 加速比从单请求 3.40× 掉到 24 并发时的 1.89×；小模型更惨，Qwen3.5-4B 从 3.73× 掉到 1.49×。</li>
+<li><strong>部署特异性：没有万能优化。</strong>草稿器、目标模型、GPU 平台、并发规模一变，瓶颈就变，人工调出来的配方换个场景就失效。</li>
+</ul>
+
+<h2>方法：一个会自己找瓶颈、自己验收、自己记账的循环</h2>
+<p>SpecPilot 按轮（round）运行，把「测量」和「改代码」分给不同的角色：</p>
+<ul>
+<li><strong>Phase 0 · 成本模型定位差距：</strong>把加速比写成 <code>S(N) = τ(N) / c(N)</code>（τ 是每步验收通过的 token 数，c 是步时间成本），再对当前系统算一个「天花板」——假设草稿最优、每类内核都跑在字节下限上，理论还能快多少。天花板分解成三个因子：树能多收多少 token、内核离字节下限多远、剖析之外的开销多大。<strong>最大的因子就是下一轮的主攻方向</strong>。</li>
+<li><strong>Phase 1 · 并行探索：</strong>主 Agent 按天花板提出几个方向（每个方向一个 GPU），子 Agent 先用最便宜的证据（离线精确重放、微基准）验证空间，<strong>净空间不足 3% 的想法直接不做</strong>，值得做才动手写补丁。</li>
+<li><strong>Phase 2–3 · 整合与内核调优：</strong>单看都过不了晋升线的小补丁由整合 Agent 叠加计时，再由内核 Agent 剖析离字节下限最远的部分做调优。晋升规则很硬： paired run 双 GPU 互换复测，收益的 95% 置信下界要超过 1% 加上两倍的 stock 噪声。</li>
+<li><strong>Phase 4 · 封印终测：</strong>每轮在<strong>没见过的请求</strong>上对 stock 盲测，并重跑 token 验证（最长 4096 token）。两关都过才生效，任何一轮不过整轮方案作废。</li>
+</ul>
+<p><strong>token forcing 是防作弊的关键：</strong>「无损」光靠构造证明不够，还要防实现 bug 和 reward hacking。它把系统输出在 stock 引擎上用 FP32 LM 头重新打分，错配率超过 stock 0.5 个百分点直接否决；大 margin 错配事件（margin 超阈值 2δ）做多(binomial)检验——stock 自己也会因内核舍入在 0.72% 的 token 上「错」，所以基线本身就带容差。<strong>任何偏离都要么能被 stock 复现、要么被解释，否则拒收。</strong></p>
+<p><strong>结构化记忆是跨场景复利：</strong>每个晋升机制沉淀成一条记忆条目（代码 delta + 变体登记 + 正确性契约 + 适用边界），复用条目必须能逐字节复现原系统才算合格，且在新部署里重新调参计时、不算新发现。目前已有 140 条。</p>
+
+<h2>四个被它发现的无损机制</h2>
+<ul>
+<li><strong>W12：无损 12-bit 权重格式。</strong>单请求下读权重是大头，那就少读字节：BF16 权重拆成三张 4-bit 平面（A：符号+高位尾数；E：每通道 16-binade 窗口内的指数偏移；B：低位尾数），A+E 恰好构成一个 8-bit 视图，GEMM 在寄存器里解码直接喂 wgmma。极少数塞不下的权重（Qwen3.8-27B 上占比 7.3×10⁻⁵）进精确逃生表。<strong>位位保真，不是量化。</strong></li>
+<li><strong>混合目标上的树验证：</strong>不再验 stock 的贪心链（第一个 miss 就停），改验按路径分数排序的 best-first 树——16 位草稿、32 节点、深度 15 的宽树；GDN 递归态不逐节点存快照，而是沿每条根路径从提交态重算。</li>
+<li><strong>两级验证（TLV）：</strong>一个约 30ms 的周期里，先用 8-bit 视图做便宜的 Q pass（11.5ms）粗筛，再对幸存分支做精确验证（14.9ms）。代价换来每次精确验收 11.67 个 token（单级只有 6.16），Q pass 直接读 W12 记录里内嵌的 8-bit 视图，不多占内存。</li>
+<li><strong>批处理三件套：</strong>共享节点预算（每步固定预算按路径概率分给各请求）、按请求自适应草稿块长（按近期接受率在 16/12/8 间选）、prompt 混入验证步（新 prompt 的行走进验证步，一次权重流两用）。</li>
+</ul>
+
+<h2>效果：单请求翻倍以上，批处理接近翻倍</h2>
+<table>
+<tr><th>场景</th><th>stock</th><th>SpecPilot</th><th>提升</th></tr>
+<tr><td>单请求 · H100（Qwen3.8-27B）</td><td>4.46×</td><td>8.86–9.41×</td><td>≈2×，比 DDTree 基线快 1.84×</td></tr>
+<tr><td>单请求 · RTX PRO 6000</td><td>—</td><td>10.63–10.87×</td><td>四目标模型全部 &gt;2× 于 stock</td></tr>
+<tr><td>批处理 · FP8（24 并发 DFlash2）</td><td>1.94×</td><td>3.90×</td><td>DSpark 3.93×，每个批大小都赢</td></tr>
+<tr><td>批处理 · BF16</td><td>3.20×</td><td>5.67×</td><td>1.71×</td></tr>
+<tr><td>弱 stock 场景（Qwen3.5-4B / Gemma-4-12B）</td><td>拖后腿</td><td>—</td><td>收益最大：2.39× / 3.11× 于 stock</td></tr>
+</table>
+<p><strong>跨部署迁移（记忆的复利）：</strong>换 DSpark 草稿直接复用树+W12+TLV；连序列草稿器 EAGLE-3 都能吃记忆，在 Gemma-4-12B 上首轮封印 2.67×、终态 3.11×；换到没有 wgmma 的 RTX PRO 6000，移植已有条目就拿到 1.92×，终态 2.44×——<strong>超过它自己的理论天花板 2.12×</strong>（因为最终系统一个 pass 里能草稿多次）；连无递归层的稠密模型 Muse-Glimmer-30B 都吃到 2.21×。</p>
+
+<h2>值得琢磨的三点</h2>
+<ul>
+<li><strong>范式可能比数字更值钱：</strong>「天花板分解 → 定向探索 → 封印验收 → 记忆沉淀」这个闭环，本质是让 Agent 替人做 systems 研究。论文里成本模型的天花板分解（τ 因子 / 内核因子 / 开销因子）单独拿出来，就是一份任何推理服务都能用的诊断清单——先算清差距在哪，再决定优化哪，比漫无目的地调参省得多。</li>
+<li><strong>和 TVP 那篇正好互补：</strong>TVP 管「草稿学得好」（训练侧），SpecPilot 管「部署跑得满」（系统侧），两边都不需要训练。对同一套投机解码栈，一个换训练损失、一个让 Agent 调系统，是两个正交的免费午餐。</li>
+<li><strong>token forcing 的防作弊设计是通用件：</strong>错配率规则 + 大 margin 事件双规则 + 「stock 自己的误差也进基线」的容差设定，任何「Agent 自动改系统」的场合都该抄——没有它，agentic 优化迟早优化出个作弊器。</li>
+</ul>
+
+<div class="caveat"><strong>边界与适用：</strong>结论集中在 DFlash2/DSpark/EAGLE-3 草稿 + Qwen3.8/3.5、Gemma-4、Muse-Glimmer 目标 + H100/RTX PRO 6000 的组合；W12 需要为各平台写内核（wgmma、mma.sync、Triton 三套都有）；agentic 循环本身有 GPU 时成本（论文附录 D 有账）；这些机制强依赖「部署画像」，直接照搬条目前先复算你自己的天花板。</div>
+
+<p class="hl"><strong>论文：</strong>arXiv:2611.02501 · SpecPilot: Autonomous Algorithm Discovery and Systems Optimization for Speculative Decoding（Li, Chai et al., UC Berkeley 等，2026-11-02）· 原文 arxiv.org/abs/2611.02501 · 代码 github.com/StargazerX0/SpecPilot</p>
+
+<footer>解读与排版：科科的 AI 助理 · 2026-11-04 · 论文与代码以作者发布版本为准</footer>
+</main>
+</body>
+</html>
