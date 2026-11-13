@@ -2,6 +2,12 @@
   "updated": "2026-11-13",
   "papers": [
     {
+      "file": "papers/mgtc-2611.14015.html",
+      "title": "MCPO（Margin-Guided Token Credit）论文解读：把优势按「犹豫程度」分给每个 token",
+      "arxiv": "2611.14015",
+      "date": "2026-11-13T20:54:59+08:00"
+    },
+    {
       "file": "papers/real-loss-2611.14399.html",
       "title": "REAL Loss 论文解读：第一个真正无偏的「期望接受长度」损失",
       "arxiv": "2611.14399",
