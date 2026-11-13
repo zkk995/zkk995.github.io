@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REAL Loss 论文解读：第一个真正无偏的「期望接受长度」损失</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{display:block;background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;overflow-x:auto}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.scroll{overflow-x:auto}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 200px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+.duo{display:flex;gap:12px;margin:16px 0;flex-wrap:wrap}
+.dcard{flex:1 1 300px;border-radius:12px;padding:14px 16px;font-size:14.5px;border:1px solid var(--line)}
+.dcard.greedy{background:var(--bluebg)}
+.dcard.sample{background:var(--orangebg)}
+.dcard h4{margin:0 0 6px;font-size:15px}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">投机解码</span><span class="tag">训练目标设计</span><span class="tag">推理加速</span><span class="tag">无偏估计</span>
+</div>
+<h1>REAL Loss: Optimizing Real Expected Acceptance Length for Speculative Decoding</h1>
+<p class="meta">arXiv:2611.14399v1 · 2026-11-10 · Yu Tian（香港大学）</p>
+<div class="oneline"><strong>一句话：</strong>WTV 这类「逐位接受率连乘」的 EAL 代理目标有结构性偏差——它把「哪些 token 真的活过了验收」这条信息丢掉了，协方差项甚至会反转梯度方向。REAL 用路径权重做无偏估计、用 Rao–Blackwellization 压方差，第一次直接优化<strong>真实的</strong>期望接受长度；只改训练损失，在 Qwen3.6-35B-A3B + Domino 上 9 个任务 × 5 个种子全面领先（4.792 vs 基线 4.657–4.749）。</div>
+</header>
+
+<section>
+<h2>一、问题：代理目标漏掉了「谁被接受了」</h2>
+<p>投机解码靠草稿模型连猜 γ 个 token、目标模型一次前向全验。提速比由<strong>期望接受长度 EAL</strong> 决定。用尾部和恒等式写出来：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>J</mi><mi>γ</mi></msub><mo stretchy="false">(</mo><mi>h</mi><mo separator="true">,</mo><mi>θ</mi><mo stretchy="false">)</mo><mo>=</mo><mi mathvariant="double-struck">E</mi><mo stretchy="false">[</mo><mi>L</mi><mo stretchy="false">]</mo><mo>=</mo><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>γ</mi></munderover><mi>P</mi><mo stretchy="false">(</mo><mi>L</mi><mo>≥</mo><mi>k</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">J_{\gamma}(h,\theta)=\mathbb{E}[L]=\sum_{k=1}^{\gamma}P(L\geq k)</annotation></semantics></math></span></span>
+<p>其中每位被接受的概率是草稿与目标分布的重叠度：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>a</mi><mi>i</mi></msub><mo>=</mo><munder><mo>∑</mo><mrow><mi>v</mi><mo>∈</mo><mi mathvariant="script">V</mi></mrow></munder><mi>min</mi><mo>⁡</mo><mo stretchy="false">{</mo><msub><mi>p</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo separator="true">,</mo><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo stretchy="false">}</mo><mo>=</mo><mn>1</mn><mo>−</mo><mrow><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow><mo stretchy="false">(</mo><msub><mi>p</mi><mi>i</mi></msub><mo separator="true">,</mo><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">a_{i}=\sum_{v\in\mathcal{V}}\min\{p_{i}(v),q_{i}(v)\}=1-\mathrm{TV}(p_{i},q_{i})</annotation></semantics></math></span></span>
+<p>近两年的「接受导向」损失把上式直接连乘成块级目标，其中最有代表性的是 WTV（<a href="/papers/wtv-2609.24150.html">本站已解读</a>）与端到端 TV：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>J</mi><mo stretchy="true">~</mo></mover><mrow><mi mathvariant="normal">W</mi><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow></msub><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><mrow><mi>y</mi><mo>∼</mo><mi>p</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">[</mo><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>γ</mi></munderover><munderover><mo>∏</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>k</mi></munderover><msub><mi>a</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">]</mo></mrow><annotation encoding="application/x-tex">\widetilde{J}_{\mathrm{WTV}}=\mathbb{E}_{y\sim p}\Big[\sum_{k=1}^{\gamma}\prod_{i=1}^{k}a_{i}(h_{i})\Big]</annotation></semantics></math></span></span>
+<p>论文指出这个连乘有个被普遍忽视的细节：<strong>被接受的 token 的条件分布是 <code>m/a</code>，既不是目标分布也不是草稿分布</strong>：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>r</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo separator="true">,</mo><mtext>accept</mtext><mo stretchy="false">)</mo><mo>=</mo><mfrac><mrow><msub><mi>m</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><mrow><msub><mi>a</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow></mfrac><mo separator="true">,</mo><mspace width="2em"/><msub><mi>m</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>α</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><mi>min</mi><mo>⁡</mo><mo stretchy="false">{</mo><msub><mi>p</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo separator="true">,</mo><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo stretchy="false">}</mo></mrow><annotation encoding="application/x-tex">r_{\theta}(v\mid h_{i},\text{accept})=\frac{m_{i}(v\mid h_{i})}{a_{i}(h_{i})},\qquad m_{i}(v)=q_{i}(v)\,\alpha_{i}(v)=\min\{p_{i}(v),q_{i}(v)\}</annotation></semantics></math></span></span>
+<p>一个被接受的 token 有双重身份：它既延长了已接受前缀，又<strong>决定了下一步在哪个前缀上验证</strong>。WTV「先对目标采样轨迹取平均、再连乘边际接受率」的做法，把 token 的这个双重身份拆散了——后续的接受率是在目标分布的续写上平均的，而不是在真正活下来的验证分支上加权的。</p>
+</section>
+
+<section>
+<h2>二、协方差 gap：偏差能大到反转梯度</h2>
+<p>定义<strong>路径权重</strong>：目标采样出的 token 上，草稿概率与目标概率之比（封顶 1）。它满足恒等式 <code>p·b = m</code>：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>b</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><mi>min</mi><mo>⁡</mo><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><mn>1</mn><mo separator="true">,</mo><mfrac><mrow><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><mrow><msub><mi>p</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow></mfrac><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mi>p</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>b</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi>m</mi><mi>i</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>h</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">b_{i}(v)=\min\Big(1,\frac{q_{i}(v\mid h_{i})}{p_{i}(v\mid h_{i})}\Big),\qquad p_{i}(v\mid h_{i})\,b_{i}(v)=m_{i}(v\mid h_{i})</annotation></semantics></math></span></span>
+<p>拿两步窗口（γ=2）对比，精确目标与 WTV 代理分别是：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>J</mi><mn>2</mn></msub><mo>=</mo><msub><mi>a</mi><mn>1</mn></msub><mo>+</mo><munder><mo>∑</mo><mi>v</mi></munder><msub><mi>m</mi><mn>1</mn></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">(</mo><mi>h</mi><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mi>a</mi><mn>1</mn></msub><mo>+</mo><msub><mi>a</mi><mn>1</mn></msub><mtext> </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mi>v</mi><mo>∼</mo><msub><mi>r</mi><mn>1</mn></msub></mrow></msub><mo stretchy="false">[</mo><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">]</mo><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>J</mi><mo stretchy="true">~</mo></mover><mrow><mrow><mi mathvariant="normal">W</mi><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow><mo separator="true">,</mo><mn>2</mn></mrow></msub><mo>=</mo><msub><mi>a</mi><mn>1</mn></msub><mo>+</mo><msub><mi>a</mi><mn>1</mn></msub><mtext> </mtext><msub><mi mathvariant="double-struck">E</mi><msub><mi>p</mi><mn>1</mn></msub></msub><mo stretchy="false">[</mo><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">J_{2}=a_{1}+\sum_{v}m_{1}(v)\,a_{2}(hv)=a_{1}+a_{1}\,\mathbb{E}_{v\sim r_{1}}[a_{2}],\qquad \widetilde{J}_{\mathrm{WTV},2}=a_{1}+a_{1}\,\mathbb{E}_{p_{1}}[a_{2}]</annotation></semantics></math></span></span>
+<p>两者之差恰好是一个协方差：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>J</mi><mn>2</mn></msub><mo>−</mo><msub><mover accent="true"><mi>J</mi><mo stretchy="true">~</mo></mover><mrow><mrow><mi mathvariant="normal">W</mi><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow><mo separator="true">,</mo><mn>2</mn></mrow></msub><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><msub><mi>p</mi><mn>1</mn></msub></msub><mo stretchy="false">[</mo><msub><mi>b</mi><mn>1</mn></msub><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">]</mo><mo>−</mo><msub><mi mathvariant="double-struck">E</mi><msub><mi>p</mi><mn>1</mn></msub></msub><mo stretchy="false">[</mo><msub><mi>b</mi><mn>1</mn></msub><mo stretchy="false">]</mo><mtext> </mtext><msub><mi mathvariant="double-struck">E</mi><msub><mi>p</mi><mn>1</mn></msub></msub><mo stretchy="false">[</mo><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">]</mo><mo>=</mo><msub><mrow><mi mathvariant="normal">Cov</mi><mo>⁡</mo></mrow><msub><mi>p</mi><mn>1</mn></msub></msub><mo stretchy="false">(</mo><msub><mi>b</mi><mn>1</mn></msub><mo separator="true">,</mo><msub><mi>a</mi><mn>2</mn></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">J_{2}-\widetilde{J}_{\mathrm{WTV},2}=\mathbb{E}_{p_{1}}[b_{1}a_{2}]-\mathbb{E}_{p_{1}}[b_{1}]\,\mathbb{E}_{p_{1}}[a_{2}]=\operatorname{Cov}_{p_{1}}(b_{1},a_{2})</annotation></semantics></math></span></span>
+<p>协方差可正可负，所以 WTV 既不是上界也不是下界，优化它不保证往真目标走。论文给了一个两步反例：词表 {A, B}，第一步 p₁=(0.4, 0.6)、q₁=(0.8, 0.2)（a₁=0.6），第二步目标在 hA 上偏好 A、在 hB 上偏好 B，草稿在两个分支上共享参数 θ：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>J</mi><mn>2</mn></msub><mo>=</mo><mn>0.86</mn><mo>+</mo><mn>0.20</mn><mtext> </mtext><mi>θ</mi><mo separator="true">,</mo><mspace width="2em"/><msub><mover accent="true"><mi>J</mi><mo stretchy="true">~</mo></mover><mrow><mrow><mi mathvariant="normal">W</mi><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow><mo separator="true">,</mo><mn>2</mn></mrow></msub><mo>=</mo><mn>1.02</mn><mo>−</mo><mn>0.12</mn><mtext> </mtext><mi>θ</mi></mrow><annotation encoding="application/x-tex">J_{2}=0.86+0.20\,\theta,\qquad \widetilde{J}_{\mathrm{WTV},2}=1.02-0.12\,\theta</annotation></semantics></math></span></span>
+<p>在 θ=0.5 处两个目标<strong>值相等（0.96），梯度却完全相反</strong>（+0.20 vs −0.12）：真目标奖励调大 θ（活下来的质量 0.4:0.2 偏向 A 分支），WTV 却按目标比例 0.24:0.36 重新分配存活质量，反过来奖励调小 θ。附录还给了第二个例子：代理甚至会反转两个草稿模型的排名。</p>
+<p class="note">实际训练中作者全程记录相邻对协方差，发现始终为正——说明 WTV 在真实训练里系统性低估精确目标，图 5 的分支估计与代理读数差距与此一致。</p>
+</section>
+
+<section>
+<h2>三、REAL：无偏估计 + Rao–Blackwellization</h2>
+<h3>第一步：路径估计器，先修正偏差</h3>
+<p>精确 EAL 的求和要遍历 |V|^k 条路径，不可直接计算。作者改成在冻结目标采样的轨迹上复权重：每步乘上 b_i，累积出 W_k = Π b_i，由 p·b = m 逐位成立可知它是无偏的：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>J</mi><mo stretchy="true">^</mo></mover><mrow><mi mathvariant="normal">P</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">h</mi></mrow></msub><mo>=</mo><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>γ</mi></munderover><msub><mi>W</mi><mi>k</mi></msub><mo separator="true">,</mo><mspace width="2em"/><msub><mi>W</mi><mi>k</mi></msub><mo>=</mo><munderover><mo>∏</mo><mrow><mi>i</mi><mo>=</mo><mn>1</mn></mrow><mi>k</mi></munderover><msub><mi>b</mi><mi>i</mi></msub><mo separator="true">,</mo><mspace width="2em"/><msub><mi mathvariant="double-struck">E</mi><mrow><mi>y</mi><mo>∼</mo><mi>p</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">[</mo><msub><mover accent="true"><mi>J</mi><mo stretchy="true">^</mo></mover><mrow><mi mathvariant="normal">P</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">h</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">]</mo><mo>=</mo><msub><mi>J</mi><mi>γ</mi></msub></mrow><annotation encoding="application/x-tex">\widehat{J}_{\mathrm{Path}}=\sum_{k=1}^{\gamma}W_{k},\qquad W_{k}=\prod_{i=1}^{k}b_{i},\qquad \mathbb{E}_{y\sim p}\big[\widehat{J}_{\mathrm{Path}}\big]=J_{\gamma}</annotation></semantics></math></span></span>
+<h3>第二步：分支估计器，Rao–Blackwellization 降方差</h3>
+<p>纯采样式估计方差大。观察：每一项的最后一个因子后面不再有别的因子，可以对它<strong>精确边缘化</strong>——E[b_k | h_k] = a_k，把采样出的 b_k 换成条件期望 a_k：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>J</mi><mo stretchy="true">^</mo></mover><mrow><mi mathvariant="normal">B</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">h</mi></mrow></msub><mo>=</mo><munderover><mo>∑</mo><mrow><mi>k</mi><mo>=</mo><mn>1</mn></mrow><mi>γ</mi></munderover><msub><mi>W</mi><mrow><mi>k</mi><mo>−</mo><mn>1</mn></mrow></msub><mtext> </mtext><msub><mi>a</mi><mi>k</mi></msub><mo separator="true">,</mo><mspace width="2em"/><msub><mi mathvariant="double-struck">E</mi><mrow><mi>y</mi><mo>∼</mo><mi>p</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">[</mo><msub><mover accent="true"><mi>J</mi><mo stretchy="true">^</mo></mover><mrow><mi mathvariant="normal">B</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">h</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">]</mo><mo>=</mo><msub><mi>J</mi><mi>γ</mi></msub></mrow><annotation encoding="application/x-tex">\widehat{J}_{\mathrm{Branch}}=\sum_{k=1}^{\gamma}W_{k-1}\,a_{k},\qquad \mathbb{E}_{y\sim p}\big[\widehat{J}_{\mathrm{Branch}}\big]=J_{\gamma}</annotation></semantics></math></span></span>
+<p>γ=3 时变化一目了然：路径估计读 b₁+b₁b₂+b₁b₂b₃，分支估计读 a₁+b₁a₂+b₁b₂a₃——只把每项最后一个因子换成条件均值，期望梯度严格不变，方差只降不升（附录 B 有证明）。实测 k=2 处单顶梯度方差降 76–84%，整体降 <strong>52–58%</strong>。</p>
+<h3>最终损失</h3>
+<p>叠上一个从头训练稳定梯度用的辅助交叉熵项，就是 REAL：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">R</mi><mi mathvariant="normal">E</mi><mi mathvariant="normal">A</mi><mi mathvariant="normal">L</mi></mrow></msub><mo>=</mo><mi>λ</mi><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><mn>1</mn><mo>−</mo><mfrac><msub><mover accent="true"><mi>J</mi><mo stretchy="true">^</mo></mover><mrow><mi mathvariant="normal">B</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">c</mi><mi mathvariant="normal">h</mi></mrow></msub><mi>γ</mi></mfrac><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo><mo>+</mo><mo stretchy="false">(</mo><mn>1</mn><mo>−</mo><mi>λ</mi><mo stretchy="false">)</mo><mtext> </mtext><msub><mi mathvariant="normal">ℓ</mi><mrow><mi mathvariant="normal">C</mi><mi mathvariant="normal">E</mi></mrow></msub></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{REAL}}=\lambda\Big(1-\frac{\widehat{J}_{\mathrm{Branch}}}{\gamma}\Big)+(1-\lambda)\,\ell_{\mathrm{CE}}</annotation></semantics></math></span></span>
+<p>整个方法<strong>只改训练损失</strong>：草稿架构、训练管线、推理流程一概不动，零额外开销。参考实现已开源。</p>
+</section>
+
+<section>
+<h2>四、结果：9 个任务 × 5 个种子，全表领先</h2>
+<p>设置相当扎实：MoE + 混合 GDN 架构的 <strong>Qwen3.6-35B-A3B</strong> 为目标、Domino 草稿（块大小 8：1 锚 + γ=7）、Open-PerfectBlend 提示由目标模型在温度 1.0 下重生成续写、Muon + AdamW、从零训 3 epochs（140K 步）。所有基线（static LK / WTV / VSD / DBLast）都在同一数据、同一预算下<strong>损失级重实现</strong>，隔离出损失本身的贡献。</p>
+<div class="scroll"><table><thead><tr><th>方法</th><th>概率式 AL (T=1.0)</th><th>贪心 AL</th><th>吞吐 (tok/s, bs=80)</th></tr></thead><tbody>
+<tr><td>static LK</td><td>4.740</td><td><strong>4.544</strong></td><td>4622.1</td></tr>
+<tr><td>WTV</td><td>4.715</td><td>4.530</td><td>4553.0</td></tr>
+<tr><td>VSD</td><td>4.657</td><td>4.497</td><td>4535.8</td></tr>
+<tr><td>DBLast</td><td>4.749</td><td>4.513</td><td>4648.6</td></tr>
+<tr><td>REAL w/o RB</td><td>4.791</td><td>4.515</td><td><strong>4664.8</strong></td></tr>
+<tr class="hl"><td>REAL</td><td><strong>4.792</strong></td><td>4.537</td><td>4662.0</td></tr>
+</tbody></table></div>
+<p class="note">概率式结果为 9 任务子集 5 种子平均；每个子集的最优都由 REAL 或 REAL w/o RB 拿下。贪心栏 static LK 最高（它的单步目标天然贴贪心机制），EAL 类里 REAL 最佳。</p>
+<ul>
+<li><strong>位置级诊断</strong>：k=1 各方法几乎持平，REAL 在 k=2–4 领先，w/o RB 在 k=5–7 领先；k=7 存活率 0.315/0.316 对 static LK 的 0.306——优势主要来自<strong>更长的连续接受前缀</strong>，而非第一位。</li>
+<li><strong>CE 项消融</strong>：去掉 CE 后 REAL w/o CE 4.624、w/o CE&amp;RB 4.588，纯 CE 只有 4.668——EAL 项与 CE 项各有贡献，缺一不可。</li>
+<li><strong>温度敏感</strong>：T=1.0 领先最大；降到 T=0.5 时 static LK 反超（5.002 vs 4.993）。这符合预期：REAL 是为随机拒绝采样推导的，甜区就是随机解码。</li>
+<li><strong>收益持续累积</strong>：每个 epoch 都领先，对 WTV 的领先从 ep1 的 +0.041 扩大到 ep3 的 +0.077；加训到 ep4 达 4.816，不早饱和。</li>
+<li><strong>训练代理指标会骗人</strong>：按 WTV 连乘形式算的训练期 EAL 代理全程偏爱 WTV，但 serving AL 上 REAL 全程领先——评估草稿损失时不能信与代理同形的指标。</li>
+</ul>
+</section>
+
+<section>
+<h2>五、怎么看这篇论文</h2>
+<p><strong>和本站的 WTV 解读对照读很有意思</strong>：WTV（arXiv:2609.24150）说「接受概率连乘就是 EAL，损失应该长成验收机制的样子」，REAL 则说「连乘之前，你得先搞清楚在哪个分布上取平均」。WTV 在 E[·] 之后才乘——先平均再连乘；REAL 是先按 <code>m</code> 加权配对、再平均——先乘再平均。这一处「平均的时机」之差，就是协方差项，小则低估，大则梯度反号。WTV 那篇的实验里代理照样带来了大幅提升，说明偏差在实践中常是良性的；但这篇证明它不总是良性，并顺手给了一个可落地的诊断量（相邻对协方差）。</p>
+<p><strong>价值</strong>：这是少数把「代理 vs 精确目标」的差距<strong>写成闭式、并证明可反号</strong>的工作；路径权重 + Rao–Blackwellization 是教科书级两步走，实现却只动损失函数一行，性价比极高。对做草稿训练的人来说，REAL 类无偏估计器可以直接替换 WTV 一类的乘积式损失。</p>
+<p><strong>边界</strong>：单目标（Qwen3.6-35B-A3B）、单草稿（Domino）、单一数据配方，跨架构泛化待验；VSD / DBLast 是损失级重实现而非完整系统复现；贪心解码下优势缩小甚至被 static LK 反超——如果你的部署是贪心解码，REAL 不是甜区；随机解码才是它的主场。</p>
+<p><strong>一句话收尾</strong>：代理指标平均得太早，丢掉的是「谁活下来」；先用路径权重把活下来的分支重新加权，再把最后一因子边缘化——真目标、低方差、零开销。</p>
+<p class="note">原文：<a href="https://arxiv.org/abs/2611.14399">arXiv:2611.14399</a> · 参考实现：<a href="https://github.com/King-ty/speculators/tree/real-loss">King-ty/speculators（real-loss 分支）</a> · 本页公式已预渲染为 MathML，离线可读。</p>
+</section>
+
+<footer>解读由灵光生成 · 2026-11-13 · 面向有 ML 背景的读者</footer>
+</div>
+</body>
+</html>
