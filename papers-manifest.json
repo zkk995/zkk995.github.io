@@ -1,6 +1,12 @@
 {
-  "updated": "2026-11-04",
+  "updated": "2026-11-13",
   "papers": [
+    {
+      "file": "papers/real-loss-2611.14399.html",
+      "title": "REAL Loss 论文解读：第一个真正无偏的「期望接受长度」损失",
+      "arxiv": "2611.14399",
+      "date": "2026-11-13T20:51:21+08:00"
+    },
     {
       "file": "papers/specpilot-2611.02501.html",
       "title": "SpecPilot 论文解读：让 Agent 自己去「榨干」投机解码，4.46× 到 10.87×",
