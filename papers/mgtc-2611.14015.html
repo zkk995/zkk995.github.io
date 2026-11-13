@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MCPO（Margin-Guided Token Credit）论文解读：把优势按「犹豫程度」分给每个 token</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{display:block;background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;overflow-x:auto}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 10px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.scroll{overflow-x:auto}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 200px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">RLVR</span><span class="tag">GRPO</span><span class="tag">信用分配</span><span class="tag">推理训练</span>
+</div>
+<h1>Margin-Guided Token Credit for Reinforcement Learning with Verifiable Rewards</h1>
+<p class="meta">arXiv:2611.14015v1 · 2026-11-10 · Chi Liu, Xin Chen, Yuchuan Weng, Srinivasan Manoharan（PayPal.AI）· 方法名 MCPO</p>
+<div class="oneline"><strong>一句话：</strong>GRPO 把整条回答的组优势平均摊给每个 token——3,000 token 的推导里，「Let」和「=」与决定胜负的那一步拿得一样多。MCPO 用策略自身分布的 <strong>top-2 差距 M=p₁−p₂</strong> 衡量"这个位置有多犹豫"，固定阈值映射成分数，把优势重新分摊：正优势多分给犹豫处，负惩罚多压到自信处；margin 从 trainer 本就要跑的旧策略前向里白拿，<strong>零额外前向、零批内统计</strong>。MiniCPM5-2B 上 5 个数据种子全部赢过 GRPO，平均 +6.55 分（macro avg@32，CI [+4.1, +9.0]）。</div>
+</header>
+
+<section>
+<h2>一、问题：GRPO 的信用是「大锅饭」</h2>
+<p>RLVR 用可验证奖励（答案对错）训推理模型，GRPO 是当前最常用形式：对同一题采 G 条回答，组内标准化出优势，然后丢进裁剪代理损失：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi mathvariant="script">L</mi><mo>=</mo><mo>−</mo><mfrac><mn>1</mn><mrow><munder><mo>∑</mo><mi>i</mi></munder><mi mathvariant="normal">∣</mi><msub><mi>o</mi><mi>i</mi></msub><mi mathvariant="normal">∣</mi></mrow></mfrac><munder><mo>∑</mo><mi>i</mi></munder><munder><mo>∑</mo><mi>t</mi></munder><mi>min</mi><mo>⁡</mo><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">(</mo><msub><mi>ρ</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><msub><mi>A</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo separator="true">,</mo><mtext> </mtext><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">p</mi></mrow><mo stretchy="false">(</mo><msub><mi>ρ</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo separator="true">,</mo><mn>1</mn><mo>±</mo><mi>ε</mi><mo stretchy="false">)</mo><msub><mi>A</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo fence="false" stretchy="true" minsize="1.2em" maxsize="1.2em">)</mo></mrow><annotation encoding="application/x-tex">\mathcal{L}=-\frac{1}{\sum_{i}|o_{i}|}\sum_{i}\sum_{t}\min\big(\rho_{i,t}A_{i,t},\ \mathrm{clip}(\rho_{i,t},1\pm\varepsilon)A_{i,t}\big)</annotation></semantics></math></span></span>
+<p>plain GRPO 里 A<sub>i,t</sub> = A<sub>i</sub>，每个 token 拿同样的优势。改进方向里最活跃的一支是用<strong>熵</strong>找关键 token：只训最高熵的 20% token（forks 论文）、把熵加进优势、按熵比分配奖励、对高低熵 token 区别约束等。但论文点出熵的两个毛病：</p>
+<ul>
+<li><strong>熵度量整个分布的铺开程度，不是决策的胶着程度</strong>：一个「有明确赢家 + 长而平的尾巴」的位置熵可以很大，但下一个 token 根本没有悬念。合成实验：同一条 margin 附近，熵能差好几个 nat（图 2）。</li>
+<li><strong>归一化依赖批</strong>：熵数值难跨位置比较，大多数方法要做批内/组内分位数归一化——同一个分布，落在犹豫多的批里分数高，落在自信的批里分数低，信用随「批里还采了什么」漂移。</li>
+</ul>
+<p>作者换成主动学习里老掉牙的 <strong>margin 准则</strong>：在每个位置只问一个问题——前两名有多接近？</p>
+</section>
+
+<section>
+<h2>二、方法：top-2 差距 + 固定阈值 + 均值不变的分摊</h2>
+<h3>margin 分数</h3>
+<p>取策略（温度缩放后）下一个 token 分布的两个最大概率，定义分数 h：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>M</mi><mo>=</mo><msub><mi>p</mi><mn>1</mn></msub><mo>−</mo><msub><mi>p</mi><mn>2</mn></msub><mo separator="true">,</mo><mspace width="2em"/><mi>h</mi><mo>=</mo><mrow><mi mathvariant="normal">c</mi><mi mathvariant="normal">l</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">p</mi></mrow><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">(</mo><mfrac><mrow><mo stretchy="false">(</mo><mn>1</mn><mo>−</mo><mi>M</mi><mo stretchy="false">)</mo><mo>−</mo><mi mathvariant="normal">ℓ</mi></mrow><mrow><mi>u</mi><mo>−</mo><mi mathvariant="normal">ℓ</mi></mrow></mfrac><mo separator="true">,</mo><mtext> </mtext><mn>0</mn><mo separator="true">,</mo><mtext> </mtext><mn>1</mn><mo fence="false" stretchy="true" minsize="1.8em" maxsize="1.8em">)</mo><mo separator="true">,</mo><mspace width="2em"/><mi mathvariant="normal">ℓ</mi><mo>=</mo><mn>0.1</mn><mo separator="true">,</mo><mtext> </mtext><mi>u</mi><mo>=</mo><mn>0.7</mn></mrow><annotation encoding="application/x-tex">M=p_{1}-p_{2},\qquad h=\mathrm{clip}\Big(\frac{(1-M)-\ell}{u-\ell},\,0,\,1\Big),\qquad \ell=0.1,\ u=0.7</annotation></semantics></math></span></span>
+<p>M ≥ 0.9 → h=0（毫无悬念），M ≤ 0.3 → h=1（真正的两难），中间线性过渡。<strong>阈值是绝对的</strong>：margin 0.9 在任何批里都得分 0，不随训练阶段或同伴漂移——代价是两个不自适应的超参，论文全程用一套没调过的 ℓ=0.1、u=0.7。</p>
+<h3>把优势摊下去（均值不变）</h3>
+<p>沿用 Yeo et al. (2026) 的加权规则，把它的「批分位数归一化熵」换成 margin 分数：</p>
+<span class="formula"><span class="katex"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi>A</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo>=</mo><msub><mi>A</mi><mi>i</mi></msub><mtext> </mtext><mfrac><msup><mi>e</mi><mrow><mi>κ</mi><mtext> </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><msub><mi>A</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>h</mi><mrow><mi>i</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub></mrow></msup><mrow><mfrac><mn>1</mn><mrow><mi mathvariant="normal">∣</mi><msub><mi>T</mi><mi>i</mi></msub><mi mathvariant="normal">∣</mi></mrow></mfrac><munder><mo>∑</mo><mrow><msup><mi>t</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup><mo>∈</mo><msub><mi>T</mi><mi>i</mi></msub></mrow></munder><msup><mi>e</mi><mrow><mi>κ</mi><mtext> </mtext><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">g</mi><mi mathvariant="normal">n</mi></mrow><mo stretchy="false">(</mo><msub><mi>A</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mtext> </mtext><msub><mi>h</mi><mrow><mi>i</mi><mo separator="true">,</mo><msup><mi>t</mi><mo mathvariant="normal" lspace="0em" rspace="0em">′</mo></msup></mrow></msub></mrow></msup></mrow></mfrac><mo separator="true">,</mo><mspace width="2em"/><mi>κ</mi><mo>=</mo><mi>ln</mi><mo>⁡</mo><mn>4</mn></mrow><annotation encoding="application/x-tex">A_{i,t}=A_{i}\,\frac{e^{\kappa\,\mathrm{sign}(A_{i})\,h_{i,t}}}{\frac{1}{|T_{i}|}\sum_{t&#x27;\in T_{i}}e^{\kappa\,\mathrm{sign}(A_{i})\,h_{i,t&#x27;}}},\qquad \kappa=\ln 4</annotation></semantics></math></span></span>
+<p>κ=ln 4：同一回答内两个 token 的原始权重最多差 e^κ=4 倍。除以组内均值保证 <strong>每个回答的平均 token 优势仍是 A_i</strong>——整体奖惩规模不变，只是内部重新分配：</p>
+<div class="flow">
+<div class="step"><b>正优势（做对了）</b><br>犹豫处（h 大）多拿奖励——推理岔路口被强化</div>
+<div class="step"><b>负优势（没做对）</b><br>自信处（h 小）多背惩罚——岔路口不被连坐</div>
+</div>
+<p class="note">负优势 ≠ 答错：奖励里还含 DAPO 软超长惩罚，答对了也可能整体为负。例子：一条回答三个位置的 margin 是 (0.98, 0.60, 0.20) → h=(0, 0.5, 1) → 权重 (1, 2, 4)。正优势时三处分到 A·(0.43, 0.86, 1.71)；负优势时反过来 A·(1.71, 0.86, 0.43)。</p>
+<h3>成本：约等于零</h3>
+<p>trainer 为校正 vLLM 采样器本来就要对 rollout 跑一遍<strong>旧策略前向</strong>——把这一次调用的 log-softmax 包一层，顺手记下每个位置的 top-2 概率即可。没有额外模型评估、没有额外 rollout、不依赖任何批统计。bf16 精度下 margin 偏差约 2×10⁻³（130K 词表实测）。</p>
+</section>
+
+<section>
+<h2>三、结果：8 组（模型×种子）全部赢，但要看清「赢在哪」</h2>
+<p>设置：MiniCPM5-2B-Base，LoRA r=32，DAPO-Math 2,048 题为训练集，200 优化步；换 <strong>Qwen3-4B-Base</strong> 用同一配方复现。评估 6 个竞赛数学集（AIME24/25/26、HMMT26、AMC23、MATH500 L5）共 297 题 × 32 样本。对比对象是<strong>未改动的 GRPO 基线</strong>，同一代码、同一参数表。</p>
+<div class="scroll"><table><thead><tr><th>数据种子</th><th>GRPO</th><th>MCPO</th><th>增益</th></tr></thead><tbody>
+<tr><td>43</td><td>31.04</td><td>34.16</td><td>+3.12</td></tr>
+<tr><td>45</td><td>29.83</td><td>36.71</td><td>+6.87</td></tr>
+<tr><td>100</td><td>34.67</td><td>40.32</td><td>+5.65</td></tr>
+<tr><td>1024</td><td>26.79</td><td>34.37</td><td>+7.57</td></tr>
+<tr><td>31415</td><td>24.65</td><td>34.18</td><td>+9.53</td></tr>
+<tr class="hl"><td>MiniCPM 均值</td><td>29.40</td><td>35.95</td><td>+6.55</td></tr>
+<tr><td>Qwen3-4B 均值</td><td>23.04</td><td>27.79</td><td>+4.75</td></tr>
+</tbody></table></div>
+<p class="note">表内为 macro avg@32（%）。MiniCPM 自助 95% CI [+4.1, +9.0]，t 检验 p=0.004；Qwen CI [+2.1, +7.7] 排除零，但仅 3 个种子、t 检验 p=0.083，作者自己也只当「方向一致」而非定论。48 个（种子×基准）组合增益全为正。</p>
+<ul>
+<li><strong>增益集中在「GRPO 时对时错」的题</strong>：按 GRPO 前 16 采样分箱、后 16 采样评分（避免回归均值），中间两档难度 +11.6/+12.5（MiniCPM）；从不解出的题只 +2 左右，基本全会几乎不动。</li>
+<li><strong>pass@k 全线领先且随 k 增大</strong>：MiniCPM k=1 时 +6.5（29.4→35.9），k=32 时 +13.8（58.1→71.9）——MCPO 模型解出的问题数量也更多。</li>
+<li><strong>回答长了 2–3 倍</strong>：MiniCPM 平均 1,208 → 3,275 token。跨 run 看，准确率与回答长度高度相关（r=0.87 / 0.97）；且两个 GRPO 基线 run 写得特别短（652 / 831 token，训练预算 10,240），恰是增益最大的两个——<strong>论文明确承认：无法区分增益来自信用信号还是来自避免了超短回答</strong>。</li>
+</ul>
+</section>
+
+<section>
+<h2>四、怎么看这篇论文</h2>
+<p><strong>价值</strong>：工程性价比极高的一招——不引入新模型、新标签、新采样，只从策略自己的分布里读一个标量；margin 逐位置可比，绕开了熵系方法普遍依赖的批内归一化。它没有说 margin 一定比熵好，只说「比均匀信用好」，定位诚实。写作也罕见地坦白：Limitations 里逐条列出没做的熵基线、没做的随机分数对照、没分离的长度效应。</p>
+<p><strong>边界</strong>：只比了 200 步 LoRA 的 plain GRPO，两个 GRPO run 答案塌缩到极短，说明部分增益可能是「不让训练崩向超短回答」而非信用分配本身；Qwen 侧种子太少；回答变长 2–3 倍意味着推理成本同步上涨；margin 与熵哪个是更好的犹豫度量，留给后续。</p>
+<p><strong>一句话收尾</strong>：熵问「分布多铺开」，margin 问「前两名多接近」。犹豫处才是推理的岔路口——奖励多给岔路口，惩罚别打岔路口。</p>
+<p class="note">原文：<a href="https://arxiv.org/abs/2611.14015">arXiv:2611.14015</a> · 本页公式已预渲染为 MathML，离线可读。</p>
+</section>
+
+<footer>解读由灵光生成 · 2026-11-13 · 面向有 ML 背景的读者</footer>
+</div>
+</body>
+</html>
