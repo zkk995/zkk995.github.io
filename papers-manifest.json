@@ -1,6 +1,24 @@
 {
-  "updated": "2026-11-13",
+  "updated": "2026-11-16",
   "papers": [
+    {
+      "file": "papers/callo-2611.18459.html",
+      "title": "Callo 论文解读：PD 分离下，用「失效的 KV」给 Cache-Miss 请求当草稿",
+      "arxiv": "2611.18459",
+      "date": "2026-11-16T17:50:26+08:00"
+    },
+    {
+      "file": "papers/eda-2603.09527.html",
+      "title": "EDA 论文解读：目标模型微调后，草稿模型怎么低成本跟上",
+      "arxiv": "2603.09527",
+      "date": "2026-11-16T17:50:26+08:00"
+    },
+    {
+      "file": "papers/forespark-2611.13442.html",
+      "title": "ForeSpark 论文解读：并行投机解码的「草稿 × 验证」预算联合调度",
+      "arxiv": "2611.13442",
+      "date": "2026-11-16T17:50:26+08:00"
+    },
     {
       "file": "papers/mgtc-2611.14015.html",
       "title": "MCPO（Margin-Guided Token Credit）论文解读：把优势按「犹豫程度」分给每个 token",
