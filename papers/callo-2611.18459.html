@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Callo 论文解读：PD 分离下，用「失效的 KV」给 Cache-Miss 请求当草稿</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+.hl{background:var(--greenbg);font-weight:600}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 200px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">投机解码</span><span class="tag">PD 分离</span><span class="tag">KV Cache</span><span class="tag">推理服务</span>
+</div>
+<h1>Callo: Serving Cache-Miss Requests with Speculative Decoding on Invalidated KV under Prefill-Decode Disaggregation</h1>
+<p class="meta">arXiv:2611.18459v1 · 2026-11-13 · Jianjun Ou, Matthew Lentz</p>
+<div class="oneline"><strong>一句话：</strong>PD 分离架构下，Agent 式长会话会让已缓存的 KV 频繁失效，请求被迫等重新 prefill。Callo 的思路是<strong>别让失效的 KV 白白闲着</strong>——趁 prefill 还没完成，直接拿这份「失效但仍有信息量」的 KV 当草稿模型输入做投机解码，等真正的 prefill 完成后再用精确 KV 校验草稿 token。在双 GPU 测试床、SWE-agent 会话、三个模型家族上，对比 vLLM 在中等负载下取得 1.05–1.19× 的全请求加速。</div>
+</header>
+
+<section>
+<h2>一、问题：Agent 会话让 PD 分离的 KV 缓存频繁失效</h2>
+<p>PD 分离（Prefill-Decode Disaggregation）是当前大模型推理服务的主流架构：prefill（处理输入、构建 KV Cache）与 decode（逐 token 生成）拆到不同机器上，各自独立扩缩容。它的前提是 <strong>KV Cache 在 prefill 算完后可以被 decode 侧复用</strong>。</p>
+<p>但 Agent 式工作负载打破了这个前提。Agent 的会话是长程、多轮、带工具调用的：每轮工具返回后，上下文被改写、截断、重排，之前算好的 KV Cache <strong>大面积失效</strong>。失效的 KV 没法用，请求只能排队等 prefill 节点重新跑一遍 prefill——decode 侧的机器就在旁边闲着，请求却动不了。</p>
+<p>这类「KV 失效导致的 cache-miss 请求」在 Agent 负载里占比很高，成为 PD 分离架构下被忽视的延迟大头。</p>
+</section>
+
+<section>
+<h2>二、方法：把失效 KV 当草稿模型的输入</h2>
+<h3>核心思路</h3>
+<p>失效的 KV 虽然不能作为「精确的上下文」，但它仍然<strong>携带大量关于这个会话的信息</strong>——毕竟它就是几步之前算出来的。Callo 的核心想法是：与其让 decode 侧干等 prefill，不如直接拿这份失效 KV 喂给草稿模型做投机解码，先把 token 猜出来。</p>
+<h3>先猜后验</h3>
+<div class="flow">
+<div class="step"><b>① 失效 KV 做草稿</b><br>decode 侧不等 prefill，直接拿失效 KV 喂草稿模型，连续猜出 token</div>
+<div class="step"><b>② Prefill 后精确校验</b><br>prefill 完成、精确 KV 就绪后，用精确 KV 逐 token 校验草稿，只提交通过的部分</div>
+<div class="step"><b>③ 调度投机时机</b><br>在 decode 资源空闲时调度投机；当草稿大概率不会被接受时提前抢占，省下算力</div>
+</div>
+<p>关键在于<strong>「先猜后验」的顺序被颠倒了</strong>：传统投机解码是先有精确上下文、再猜 token；Callo 是先猜 token、后补精确上下文，用精确 KV 事后校验。这样 prefill 的等待时间就被投机解码「填满」了。</p>
+<h3>调度策略</h3>
+<p>Callo 在调度上做了两件事：一是<strong>利用 decode 资源的空闲窗口</strong>调度投机——反正闲着也是闲着；二是当草稿大概率不会被接受时<strong>提前抢占</strong>投机，把算力还给别的请求，避免白猜。</p>
+</section>
+
+<section>
+<h2>三、结果：1.05–1.19× 全请求加速</h2>
+<p>实验设置：双 GPU 测试床，负载来自 SWE-agent 会话，覆盖三个模型家族，对比对象是 vLLM。</p>
+<ul>
+<li><strong>中等负载下 1.05–1.19× 的全请求加速</strong>：注意这是「all-request」口径——不是只看被投机加速的请求，而是所有请求的平均延迟都变好了。</li>
+<li><strong>增益在集群规模下依然成立</strong>：作者用真实 trace 驱动的集群级模拟，说明这个收益不是双 GPU 测试床上的小样本假象。</li>
+</ul>
+<p class="note">1.05–1.19× 看起来不大，但要注意这是<strong>全请求平均</strong>、且在双 GPU 小测试床上测得——小规模测试床通常低估 PD 分离的实际收益，因为通信与排队效应在集群里才充分显现。</p>
+</section>
+
+<section>
+<h2>四、怎么看这篇论文</h2>
+<p><strong>价值</strong>：这篇论文把「失效的 KV」从纯粹的浪费变成了可利用的资源，视角很巧。Agent 负载下 KV 失效是常态而非异常，Callo 把这个「常态浪费」变成了投机解码的免费草稿来源——等于把 PD 分离架构里 prefill 等待时间的「死时间」盘活了。对做 Agent serving 的人来说，这是很实用的思路。</p>
+<p><strong>边界</strong>：只在双 GPU 测试床上做了实验，集群级结果靠模拟而非真实集群；1.05–1.19× 的增益对负载分布敏感（中等负载），高负载或极低负载下的表现论文没有给出；「草稿大概率不被接受时抢占」的判断本身需要额外建模，其准确性依赖具体负载。</p>
+<p><strong>一句话收尾</strong>：失效的 KV 不是垃圾，是还没来得及校验的草稿——Agent 时代的 PD 分离服务，别让 prefill 的等待时间白等。</p>
+<p class="note">原文：<a href="https://arxiv.org/abs/2611.18459">arXiv:2611.18459</a> · 本页为通俗解读，公式与细节以原文为准。</p>
+</section>
+
+<footer>解读由灵光生成 · 2026-11-16 · 面向有 ML 背景的读者</footer>
+</div>
+</body>
+</html>

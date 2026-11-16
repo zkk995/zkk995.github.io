@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ForeSpark 论文解读：并行投机解码的「草稿 × 验证」预算联合调度</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+.hl{background:var(--greenbg);font-weight:600}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 200px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">投机解码</span><span class="tag">并行草稿</span><span class="tag">Goodput 调度</span><span class="tag">vLLM</span>
+</div>
+<h1>ForeSpark: Joint Draft and Verification Budget Scheduling for Parallel Speculative Decoding</h1>
+<p class="meta">arXiv:2611.13442v2 · 2026-11-10 · Jaeyong Song, Daniel Wang, Pratyush Patel, Jonny Kong, Preyas Shah, Shobhit Kanaujia</p>
+<div class="oneline"><strong>一句话：</strong>并行草稿（parallel drafters）一次前向就吐出一整块草稿 token，很适合服务场景，但现有系统只控制「验证多少 token」，每个请求仍然照常起草完整一块。ForeSpark 提出<strong>工作保持投机（WCS）</strong>：对每个请求<strong>联合分配草稿预算和验证预算</strong>。在 vLLM 上实现后，对比 SOTA 的 DSpark 吞吐最高提升 1.77×，比自回归解码提升 2.49×（同等单请求生成率下），且不改变输出分布；在延迟 SLO 下还能承载 DSpark 1.51× 的请求速率。</div>
+</header>
+
+<section>
+<h2>一、问题：并行草稿的浪费藏在「草稿太长」里</h2>
+<p>并行草稿模型（parallel drafters）一次前向就提出一整块草稿 token，对 LLM serving 很有吸引力。近期系统开始优化 <strong>goodput</strong>（每秒被接受的 token 数），因为被拒绝的草稿会抢走其他请求的算力。</p>
+<p>但作者发现一个被忽视的漏洞：现有系统只控制「验证多少 token」，<strong>每个请求仍然照常起草完整一块</strong>。高负载下的实测显示，起草最多吃掉 <strong>40% 的每步时间</strong>，其中大部分草稿从未被验证、直接被丢弃——纯浪费。</p>
+<p>更麻烦的是，自回归草稿模型那套「草稿长度控制」在这里不管用：并行草稿在单次前向之前就<strong>承诺了草稿长度</strong>，没法中途收手。而且草稿长度和验证长度在 batch 内是耦合的，必须对每个请求<strong>联合选择</strong>，同时保证每步的决策计算足够便宜。</p>
+</section>
+
+<section>
+<h2>二、方法：工作保持投机（WCS）</h2>
+<p>ForeSpark 是 WCS（Work-Conserving Speculation）设计的原型，核心是<strong>对每个请求联合分配草稿预算和验证预算</strong>，由三个组件构成：</p>
+<div class="flow">
+<div class="step"><b>① 上下文感知预草稿估计器</b><br>从目标模型的上下文特征出发，为每个候选草稿长度预测接受率</div>
+<div class="step"><b>② 轻量联合草稿-验证调度器</b><br>通过一次全局排序同时选出草稿长度和验证长度，决策开销足够便宜</div>
+<div class="step"><b>③ 草稿后预算分配</b><br>把验证预算花在最有可能被接受的 token 上</div>
+</div>
+<p>关键洞察是：草稿长度和验证长度不是两个独立旋钮，而是<strong>共享同一份算力预算的两端</strong>。草稿短了接受率高但覆盖少，草稿长了浪费在没人验证的 token 上；验证预算给谁多给谁少，也直接决定 goodput。把它们放进同一次全局排序里联合决策，才能在高负载下既不浪费草稿、又不浪费验证。</p>
+</section>
+
+<section>
+<h2>三、结果：吞吐最高 1.77×，承载能力 1.51×</h2>
+<p>实现基于 vLLM，对比对象是 SOTA 的 DSpark 和自回归解码，主要结果：</p>
+<ul>
+<li><strong>吞吐最高提升 1.77×（对比 DSpark）</strong>、<strong>2.49×（对比自回归解码）</strong>，且是在<strong>同等单请求生成率</strong>下取得的——不是靠牺牲单请求体验换吞吐。</li>
+<li><strong>不改变输出分布</strong>：ForeSpark 只动调度，不动接受/拒绝逻辑，输出分布与原系统一致，无损。</li>
+<li><strong>更高承载能力</strong>：在延迟 SLO 约束下，能承载 DSpark 1.51× 的请求速率——高负载下「草稿浪费」被砍掉，同样算力能多接一半的请求。</li>
+</ul>
+<p class="note">「高负载下起草占 40% 步时间、其中大部分从未被验证」是这篇论文最有说服力的动机数据：说明浪费不是边缘 case，而是高负载下的常态。</p>
+</section>
+
+<section>
+<h2>四、怎么看这篇论文</h2>
+<p><strong>价值</strong>：它把投机解码的调度从「验证侧优化」推进到「草稿侧 + 验证侧联合优化」。此前 goodput 优化都盯着验证端，这篇指出草稿端才是更大的浪费源，并给出一个计算上足够便宜（全局排序）的联合调度方案。对 vLLM 用户来说是可以期待的工程级改进。</p>
+<p><strong>边界</strong>：收益依赖「上下文特征能预测接受率」这一前提，估计器在不同负载和模型上的泛化性需要更多验证；联合调度引入了额外的每步决策逻辑，其开销与稳健性在极端负载下的表现论文未详述；实验对比集中在 DSpark 一条基线，与其他投机解码路线的横向比较有限。</p>
+<p><strong>一句话收尾</strong>：并行草稿的浪费不在「猜错」，而在「猜了没人验」——把草稿预算和验证预算放进同一次调度，高负载下的算力才真正用在刀刃上。</p>
+<p class="note">原文：<a href="https://arxiv.org/abs/2611.13442">arXiv:2611.13442</a> · 本页为通俗解读，细节以原文为准。</p>
+</section>
+
+<footer>解读由灵光生成 · 2026-11-16 · 面向有 ML 背景的读者</footer>
+</div>
+</body>
+</html>

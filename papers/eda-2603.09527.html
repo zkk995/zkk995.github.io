@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDA 论文解读：目标模型微调后，草稿模型怎么低成本跟上</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+.hl{background:var(--greenbg);font-weight:600}
+.flow{display:flex;gap:10px;margin:14px 0;flex-wrap:wrap}
+.step{flex:1 1 200px;background:var(--bluebg);border:1px solid var(--line);border-radius:10px;padding:12px 14px;font-size:14px}
+.step b{color:var(--blue)}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<div>
+<span class="tag">投机解码</span><span class="tag">草稿模型对齐</span><span class="tag">参数高效微调</span>
+</div>
+<h1>Efficiently Aligning Draft Models via Parameter- and Data-Efficient Adaptation</h1>
+<p class="meta">arXiv:2603.09527v2 · 2026-03-10 · Luxi Lin, Zhihang Lin, Zhanpeng Zeng, Yuhao Chen, Qingyu Zhang, Jixiang Luo, Xuelong Li, Rongrong Ji</p>
+<div class="oneline"><strong>一句话：</strong>目标模型做过领域微调后，通用草稿模型的接受率会明显下滑；为每个微调后的目标模型完整重训草稿模型又贵又不划算。EDA（Efficient Draft Adaptation）用三招低成本对齐：<strong>共享/私有组件解耦的架构、用微调后的目标模型重新生成训练数据、高价值样本筛选</strong>——在大幅降低训练成本的前提下恢复投机解码性能、提高平均接受长度。代码已开源。</div>
+</header>
+
+<section>
+<h2>一、问题：目标模型微调后，草稿模型「对不上」了</h2>
+<p>投机解码的加速效果高度依赖草稿模型与目标模型的分布一致：草稿猜得准，接受率才高。但在实际部署中，目标模型往往针对特定领域做过微调，而草稿模型通常还是基于通用底座的——两者分布出现偏差，接受长度下降，加速比随之下滑。</p>
+<p>朴素的解决办法是为每个微调后的目标模型<strong>完整重训一个草稿模型</strong>。这既昂贵又低效：每换一个领域微调版本就要重训一次，成本随目标模型数量线性增长，很难在真实业务里持续维护。</p>
+</section>
+
+<section>
+<h2>二、方法：EDA 的三个创新</h2>
+<p>EDA（Efficient Draft Adaptation）用参数高效 + 数据高效的方式对齐草稿模型，包含三个创新点：</p>
+<div class="flow">
+<div class="step"><b>① 解耦架构</b><br>把草稿模型拆成共享组件和私有组件：共享部分承接通用分布，轻量私有组件单独建模目标模型的特有输出分布——对齐时只更新轻量私有部分，参数开销小</div>
+<div class="step"><b>② 数据再生成</b><br>用微调后的目标模型重新生成训练数据，让训练分布与实际投机解码时的目标分布对齐，从而提高平均接受长度</div>
+<div class="step"><b>③ 高价值样本筛选</b><br>优先挑选对对齐最有价值的数据做训练，进一步提升数据效率</div>
+</div>
+<p>三者组合的效果是：在不完整重训草稿模型的前提下，恢复微调后目标模型上的投机解码性能——论文报告其取得了更高的平均接受长度，且训练成本显著低于完整重训。代码已在 GitHub 开源（<a href="https://github.com/Lyn-Lucy/Efficient-Draft-Adaptation">Efficient-Draft-Adaptation</a>）。</p>
+</section>
+
+<section>
+<h2>三、怎么看这篇论文</h2>
+<p><strong>价值</strong>：它补上了投机解码在真实业务里的一块短板——目标模型会随领域微调不断演进，草稿模型如果每次都跟着完整重训，成本无法接受。EDA 的解耦架构让对齐变成「只训轻量私有部分」的轻量操作，数据再生成则直接对准了「训练分布与投机解码分布不一致」这个接受率下降的根源，思路清晰、可落地。</p>
+<p><strong>边界</strong>：摘要未给出具体数值对比，接受长度和训练成本的量化结果以原文实验部分为准；「数据再生成」依赖微调后目标模型的生成质量，若目标模型微调后本身有偏差，再生成的数据也会带偏差；方法主要面向「目标模型被微调」的场景，对通用底座 + 通用草稿的常规组合，收益空间有限。</p>
+<p><strong>一句话收尾</strong>：草稿模型不必每次都重训——把「跟不上的那部分」拆出来轻量对齐，接受率就能低成本找回来。</p>
+<p class="note">原文：<a href="https://arxiv.org/abs/2603.09527">arXiv:2603.09527</a> · 本页为通俗解读，细节以原文为准。</p>
+</section>
+
+<footer>解读由灵光生成 · 2026-11-16 · 面向有 ML 背景的读者</footer>
+</div>
+</body>
+</html>
