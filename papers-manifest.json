@@ -1,6 +1,12 @@
 {
-  "updated": "2026-11-16",
+  "updated": "2026-11-18",
   "papers": [
+    {
+      "file": "papers/edr-2610.10411.html",
+      "title": "EDR 论文解读：把投机解码的训练目标直接对准「期望解码轮数」",
+      "arxiv": "2610.10411",
+      "date": "2026-11-18T09:32:09+08:00"
+    },
     {
       "file": "papers/callo-2611.18459.html",
       "title": "Callo 论文解读：PD 分离下，用「失效的 KV」给 Cache-Miss 请求当草稿",
