@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EDR 论文解读：把投机解码的训练目标直接对准「期望解码轮数」</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14.5px;overflow-x:auto}
+math{overflow-x:auto}
+mrow{font-style:normal}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">推理加速</span><span class="tag">投机解码</span><span class="tag">训练目标</span><span class="tag">并行草稿</span>
+<h1>EDR：把草稿模型的训练目标直接对准「期望解码轮数」，不再绕道代理损失</h1>
+<p class="meta">Training Parallel Speculative Draft Models by Directly Minimizing Expected Decoding Rounds<br>
+Yunxiao Zhao, Changxiao Cai · 密歇根大学 · <a href="https://arxiv.org/abs/2610.10411" target="_blank" rel="noopener">arXiv:2610.10411</a> v1 2026-10-07</p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>并行/半自回归草稿器的现有训练目标全是「分块局部」的代理——把每块单独算损失，无视跨轮耦合。这篇把投机解码写成马尔可夫奖励过程，推出一个<strong>数学上严格等于期望解码轮数</strong>的目标函数 EDR，配时序差分形式的梯度直接训练，不引入任何新超参数；一个 epoch 微调就让 DSpark、DFly 两个 SOTA 草稿器在九个基准上平均接受长度全面持平或领先，还顺带证明了局部代理目标严格次优。</div>
+
+<section>
+<h2>1 · 背景：训练目标和真正想要的东西对不上</h2>
+<p>投机解码的账很好算：草稿器每轮猜一串 token，大模型并行验证，加速快慢几乎完全由<strong>平均接受长度</strong>（等价于平均要跑多少轮验证）决定。理想的训练目标就是「让期望解码轮数最少」。</p>
+<p>麻烦出在并行草稿的特殊结构上。自回归草稿器每个 token 等前一个定稿，损失匹配目标模型的下一 token 分布就等于对齐全局效率；但并行/半自回归草稿器里，位置 t 的草稿分布取决于<strong>这一轮从哪里开始</strong>（n &lt; t 时它只能看到部分中间 token），而「从哪里开始」又由前面几轮被接受了多少决定。改一处草稿，既影响本轮的接受情况，也改变后续各轮的起点——这就是<strong>跨轮耦合</strong>。</p>
+<p>现有训练目标（token 级的期望接受 token 数、块级的 D-PACE/E2E 等）全是局部代理：把每块单独算分布差异，配一个手工设计的权重，跨轮耦合被整体忽略。它们训出来的草稿器不坏，但没人知道离「轮数最少」有多远。</p>
+<p class="note">这篇文章回答的问题就一句：能不能<strong>直接</strong>以期望解码轮数为训练目标？</p>
+</section>
+
+<section>
+<h2>2 · 把投机解码写成马尔可夫奖励过程</h2>
+<p>关键观察有两个。其一，固定输出序列后，投机解码剩下的随机性只有「哪些位置被接受」，这构成一个马尔可夫链：状态 (n, t) 表示本轮从位置 n 之后开始、当前验证到位置 t，接受则本轮继续，拒绝则从 t 开新一轮。其二，拒绝采样保证输出严格服从目标模型分布，所以对目标 rollout 取期望，就得到期望解码轮数的精确刻画。</p>
+<p>链上每个状态的接受概率就是标准的拒绝采样比值：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>A</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><mi>min</mi><mo>⁡</mo><mtext> ⁣</mtext><mrow><mo fence="true">{</mo><mn>1</mn><mo separator="true">,</mo><mtext>  </mtext><mfrac><mrow><msub><mi>q</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>x</mi><mrow><mn>1</mn><mo>:</mo><mi>n</mi></mrow></msub><mo separator="true">;</mo><mtext> </mtext><msub><mi>x</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn><mo>:</mo><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false">)</mo></mrow><mrow><msub><mi>p</mi><mi>t</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>t</mi></msub><mo>∣</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo></mrow></mfrac><mo fence="true">}</mo></mrow></mrow><annotation encoding="application/x-tex">A^q_{n,t}(x_{\le t}) = \min\!\left\{1,\; \frac{q_{n,t}(x_t \mid x_{1:n};\, x_{n+1:t-1})}{p_t(x_t \mid x_{&lt;t})}\right\}</annotation></semantics></math></div>
+<p>「本轮从 n 开始、验证到 t」这一状态被访问的概率 ω<sub>n,t</sub>（占据概率）满足一个前向递推：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>ω</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn><mo separator="true">,</mo><mi>t</mi><mo>+</mo><mn>1</mn></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><msubsup><mi>ω</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mtext> </mtext><msubsup><mi>A</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo separator="true">,</mo><mspace width="2em"/><msubsup><mi>ω</mi><mrow><mi>t</mi><mo separator="true">,</mo><mi>t</mi><mo>+</mo><mn>1</mn></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><munderover><mo>∑</mo><mrow><mi>n</mi><mo>=</mo><mn>0</mn></mrow><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></munderover><msubsup><mi>ω</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mtext> </mtext><msubsup><mi>R</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\omega^q_{n+1,t+1}(x_{\le t}) = \omega^q_{n,t}(x_{&lt;t})\, A^q_{n,t}(x_{\le t}), \qquad \omega^q_{t,t+1}(x_{\le t}) = \sum_{n=0}^{t-1} \omega^q_{n,t}(x_{&lt;t})\, R^q_{n,t}(x_{\le t})</annotation></semantics></math></div>
+<p>由于每轮都从对角状态 (t, t+1) 开始，<strong>轮数恰好等于访问过的对角状态数</strong>。由此得到期望轮数的精确表达式（Proposition 1）：每个状态的拒绝概率就是访问它的期望代价，占据加权求和即为轮数。</p>
+</section>
+
+<section>
+<h2>3 · EDR：严格等于期望轮数的目标函数</h2>
+<p>把上式对目标 rollout 取平均，就得到 EDR 目标（Theorem 1）：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">E</mi><mi mathvariant="normal">D</mi><mi mathvariant="normal">R</mi></mrow></msub><mo stretchy="false">(</mo><mi>q</mi><mo stretchy="false">)</mo><mtext>  </mtext><mo>:</mo><mo>=</mo><mtext>  </mtext><mn>1</mn><mo>+</mo><msub><mi mathvariant="double-struck">E</mi><mrow><mi>X</mi><mo>∼</mo><mi>p</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>L</mi></munderover><munderover><mo>∑</mo><mrow><mi>n</mi><mo>=</mo><mn>0</mn></mrow><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></munderover><msubsup><mi>ω</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>X</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mtext> </mtext><msubsup><mi>c</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>X</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo fence="true">]</mo></mrow><mtext>  </mtext><mo>=</mo><mtext>  </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mi>X</mi><mo>∼</mo><mi>p</mi></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><msup><mi>τ</mi><mi>q</mi></msup><mo stretchy="false">(</mo><mi>X</mi><mo stretchy="false">)</mo><mo fence="true">]</mo></mrow><mtext>  </mtext><mo>=</mo><mtext>  </mtext><mi mathvariant="double-struck">E</mi><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><msup><mi>T</mi><mi>q</mi></msup><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{EDR}}(q) \;:=\; 1 + \mathbb{E}_{X\sim p}\!\left[\sum_{t=1}^{L}\sum_{n=0}^{t-1} \omega^q_{n,t}(X_{&lt;t})\, c^q_{n,t}(X_{&lt;t})\right] \;=\; \mathbb{E}_{X\sim p}\!\left[\tau^q(X)\right] \;=\; \mathbb{E}\!\left[T^q\right]</annotation></semantics></math></div>
+<p>其中局部拒绝代价 c<sub>n,t</sub> 是状态 (n,t) 的拒绝概率对目标分布的条件期望，有闭式解——本质是草稿与目标分布在<strong>排除 EOS、按目标非 EOS 质量归一</strong>后的 TV 距离：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msubsup><mi>c</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>=</mo><msub><mi mathvariant="double-struck">E</mi><mrow><msub><mi>X</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo>∼</mo><mi>p</mi><mo stretchy="false">(</mo><mo>⋅</mo><mo>∣</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo></mrow></msub><mtext> ⁣</mtext><mrow><mo fence="true">[</mo><msubsup><mi>R</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo separator="true">,</mo><msub><mi>X</mi><mi>t</mi></msub><mo stretchy="false">)</mo><mo fence="true">]</mo></mrow><mo separator="true">,</mo><mspace width="2em"/><msubsup><mi>c</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo>=</mo><mfrac><mn>1</mn><mrow><mn>1</mn><mo>−</mo><msub><mi>p</mi><mi>t</mi></msub><mo stretchy="false">(</mo><mtext mathvariant="monospace">&lt;EOS&gt;</mtext><mo>∣</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo></mrow></mfrac><munder><mo>∑</mo><mrow><mi>v</mi><mo>∈</mo><mi mathvariant="script">V</mi></mrow></munder><msub><mrow><mo fence="true">[</mo><mtext> </mtext><msub><mi>p</mi><mi>t</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mo>−</mo><msub><mi>q</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow></msub><mo stretchy="false">(</mo><mi>v</mi><mo>∣</mo><msub><mi>x</mi><mrow><mn>1</mn><mo>:</mo><mi>n</mi></mrow></msub><mo separator="true">;</mo><mtext> </mtext><msub><mi>x</mi><mrow><mi>n</mi><mo>+</mo><mn>1</mn><mo>:</mo><mi>t</mi><mo>−</mo><mn>1</mn></mrow></msub><mo stretchy="false">)</mo><mtext> </mtext><mo fence="true">]</mo></mrow><mo lspace="0em" rspace="0em">+</mo></msub></mrow><annotation encoding="application/x-tex">c^q_{n,t}(x_{&lt;t}) = \mathbb{E}_{X_{&lt;t}\sim p(\cdot\mid x_{&lt;t})}\!\left[R^q_{n,t}(x_{&lt;t}, X_t)\right], \qquad c^q_{n,t} = \frac{1}{1 - p_t(\texttt{&lt;EOS&gt;} \mid x_{&lt;t})} \sum_{v\in\mathcal{V}} \left[\, p_t(v \mid x_{&lt;t}) - q_{n,t}(v \mid x_{1:n};\, x_{n+1:t-1}) \,\right]_{+}</annotation></semantics></math></div>
+<p>三个值得停一下的细节：</p>
+<ul>
+<li><strong>占据概率是草稿器自己决定的</strong>。之前代理目标的权重都是手工固定或指数衰减调度，EDR 里权重 ω<sub>n,t</sub> 就是「解码真的走到这个状态」的概率——接受行为改变后续轮次起点这件事，被权重精确编码了，这正是跨轮耦合的落点；</li>
+<li><strong>EOS 处理是对的</strong>。目标模型产出 EOS 后本轮自然结束、不再计罚，之前的目标都没把这一点算清；</li>
+<li><strong>没有新超参数</strong>。整个目标只有草稿分布和目标分布，不需要调任何辅助权重。</li>
+</ul>
+<p>当块大小 B→∞（退化为 AR 草稿器）时，EDR 收缩成逐位置局部代价之和，恰好恢复 Yin et al. (2024) 的经典结论——新框架把旧结果作为特例包含，同时精确刻画了块限制带来的跨轮依赖。</p>
+</section>
+
+<section>
+<h2>4 · 梯度与训练：TD 形式，只做前向递推</h2>
+<p>逐序列 EDR 损失同时依赖局部代价 c 和占据概率 ω，后者又要对 q 反向递推，直接求导看似要回传整条链。作者用 MRP 的值函数（从状态 (n,t) 出发的期望累计代价，满足 Bellman 方程）推出<strong>时序差分形式的梯度</strong>（Theorem 2）：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="normal">∇</mi><mi>θ</mi></msub><msub><mover accent="true"><mi mathvariant="script">L</mi><mo>^</mo></mover><mrow><mi mathvariant="normal">E</mi><mi mathvariant="normal">D</mi><mi mathvariant="normal">R</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>q</mi><mi>θ</mi></msub><mo separator="true">;</mo><mi>x</mi><mo stretchy="false">)</mo><mo>=</mo><munderover><mo>∑</mo><mrow><mi>t</mi><mo>=</mo><mn>1</mn></mrow><mi>L</mi></munderover><munderover><mo>∑</mo><mrow><mi>n</mi><mo>=</mo><mn>0</mn></mrow><mrow><mi>t</mi><mo>−</mo><mn>1</mn></mrow></munderover><msubsup><mi>ω</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mrow><mo fence="true">[</mo><mtext> </mtext><msub><mi mathvariant="normal">∇</mi><mi>θ</mi></msub><msubsup><mi>c</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>&lt;</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mtext>  </mtext><mo>+</mo><mtext>  </mtext><msub><mi mathvariant="normal">∇</mi><mi>θ</mi></msub><msubsup><mi>A</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><msub><mi>x</mi><mrow><mo>≤</mo><mi>t</mi></mrow></msub><mo stretchy="false">)</mo><mrow><mo fence="true">(</mo><msubsup><mi>V</mi><mrow><mi>n</mi><mo separator="true">,</mo><mi>t</mi><mo>+</mo><mn>1</mn></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>−</mo><msubsup><mi>V</mi><mrow><mi>t</mi><mo>+</mo><mn>1</mn></mrow><mi>q</mi></msubsup><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo fence="true">)</mo></mrow><mtext> </mtext><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\nabla_\theta \hat{\mathcal{L}}_{\mathrm{EDR}}(q_\theta; x) = \sum_{t=1}^{L}\sum_{n=0}^{t-1} \omega^q_{n,t}(x_{&lt;t}) \left[\, \nabla_\theta c^q_{n,t}(x_{&lt;t}) \;+\; \nabla_\theta A^q_{n,t}(x_{\le t})\left(V^q_{n,t+1}(x) - V^q_{t+1}(x)\right) \,\right]</annotation></semantics></math></div>
+<p>梯度只经过局部项 ∇c 和 ∇A 流动，占据概率 ω 与值函数 V 都用 stop-gradient 前向算出——<strong>训练一步只需要前向递推，不需要沿占据概率反向传播</strong>，比直接展开递推式高效得多。整个训练流程（Algorithm 1）：从目标模型采 M 条 rollout，一次批量前向算出所有状态的 A、c、ω、V，加权求和得到损失，更新参数。</p>
+<p>框架还附赠一个<strong>精确的离线评估器</strong>：给定目标 rollout 就能精确算出期望轮数，不用真跑在线投机解码就能成对比较不同草稿器——实验里所有方法都在完全相同的目标轨迹上评估，天然配对、无采样方差。</p>
+<p>理论上（3.5 节），作者证明了块级局部代理对 EDR 而言<strong>严格次优</strong>：代理把块内生存概率和固定权重 a<sub>n</sub>=1 塞进加权和，而 EDR 的真实权重是草稿器相关的占据概率，二者只在期望意义下吻合，逐序列必然有偏差。</p>
+</section>
+
+<section>
+<h2>5 · 实验：一个目标函数，两个 SOTA 草稿器全面受益</h2>
+<p>设置很克制：只微调草稿器参数，DSpark 配 Qwen3-4B、DFly 配 Qwen3-8B，块大小 7，Open-PerfectBlend 数据一个 epoch（batch 96），单卡 H100/H100，架构与推理流程完全不动。对比对象是端到端 TV（E2E）这一最强的块级局部目标。九基准平均接受长度（MAL，越高越好，加粗为最优）：</p>
+<table>
+<tr><th>Qwen3-4B</th><th>GSM8K</th><th>MATH</th><th>AIME25</th><th>MBPP</th><th>HumanEval</th><th>LCB</th><th>MT-Bench</th><th>Alpaca</th><th>Arena-Hard</th></tr>
+<tr><td>DSpark</td><td>6.23</td><td>6.12</td><td>5.46</td><td>5.28</td><td>5.52</td><td>5.46</td><td>3.70</td><td>3.62</td><td>3.59</td></tr>
+<tr><td>E2E</td><td>6.32</td><td>6.20</td><td>5.57</td><td>5.34</td><td>5.58</td><td>5.54</td><td>3.75</td><td>3.66</td><td>3.67</td></tr>
+<tr><td class="hl">EDR</td><td class="hl">6.32</td><td class="hl">6.20</td><td class="hl">5.59</td><td class="hl">5.34</td><td class="hl">5.59</td><td class="hl">5.56</td><td class="hl">3.78</td><td class="hl">3.70</td><td class="hl">3.70</td></tr>
+</table>
+<table>
+<tr><th>Qwen3-8B</th><th>GSM8K</th><th>MATH</th><th>AIME25</th><th>MBPP</th><th>HumanEval</th><th>LCB</th><th>MT-Bench</th><th>Alpaca</th><th>Arena-Hard</th></tr>
+<tr><td>DFly</td><td>6.30</td><td>5.94</td><td>5.15</td><td>5.26</td><td>5.58</td><td>5.23</td><td>3.57</td><td>3.45</td><td>3.18</td></tr>
+<tr><td>E2E</td><td>6.34</td><td>5.98</td><td>5.18</td><td>5.32</td><td>5.62</td><td>5.26</td><td>3.61</td><td>3.49</td><td>3.21</td></tr>
+<tr><td class="hl">EDR</td><td class="hl">6.35</td><td class="hl">6.00</td><td class="hl">5.22</td><td class="hl">5.32</td><td class="hl">5.63</td><td class="hl">5.29</td><td class="hl">3.65</td><td class="hl">3.52</td><td class="hl">3.25</td></tr>
+</table>
+<ul>
+<li><strong>全面持平或领先</strong>：两个草稿器、九个基准，EDR 没有一处低于 E2E；增益最大的是 AIME25、LiveCodeBench 和聊天类基准——越接近「分布本身难猜」的场景，直接优化全局目标的收益越明显；</li>
+<li><strong>配对比较干净</strong>：所有方法在同一批目标轨迹上用精确离线评估器算 MAL，差异不含采样方差，结论可信度高；</li>
+<li><strong>成本</strong>：每步要算占据概率和值函数，比局部目标贵一些，但只是前向递推，单卡即可训练。</li>
+</ul>
+</section>
+
+<section>
+<h2>6 · 值得注意的点</h2>
+<ul>
+<li><strong>价值在「目标函数对了」</strong>：之前大家用各种启发式加权逼近接受长度，这篇把真正的目标写成可优化、可精确评估的形式，属于换地基的工作；AR 情形还能退回经典结论，理论闭环完整；</li>
+<li><strong>局限一：块大小固定</strong>。高并发服务下长块验证代价高，作者指出自适应块长（置信度低就缩短）是自然的下一步，但需要把框架扩展到逐轮决策块长；</li>
+<li><strong>局限二：MAL 的天花板没被刻画</strong>。同一目标模型下，MAL 在不同数据集间波动很大，说明有的分布天生难猜；论文只优化「给定目标分布下的草稿器」，没有回答「目标分布的什么性质决定投机解码效率上限」；</li>
+<li><strong>对比范围</strong>：实验只对比了 E2E 这一种训练目标（同架构同数据），没有和 DSpine 这类改架构的方法直接比——两者正交，一个改「怎么训」，一个改「怎么猜」，理论上可以叠加。</li>
+</ul>
+<p>整体看，这是「草稿器训练目标」这条线上目前最彻底的答案：从 MRP 建模到 TD 梯度再到精确评估器，一整套都围着「期望轮数」这一个量转，论证链条干净。对做并行草稿的人来说，以后训草稿器多了一个理论上站得住的默认选项；对整条投机解码线来说，「跨轮耦合可以被精确优化」这件事本身值得跟。</p>
+</section>
+
+<footer>
+解读时间：2026-11-18 · 解读：灵光（受托代读）· 原文：<a href="https://arxiv.org/abs/2610.10411" target="_blank" rel="noopener">arXiv:2610.10411</a>（密歇根大学，代码 github.com/y-x-zhao/AngelSpec-EDR）<br>
+更多解读见 <a href="/papers/" target="_blank" rel="noopener">papers/ 索引</a>
+</footer>
+
+</div>
+</body>
+</html>
