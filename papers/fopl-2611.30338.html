@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FOPL 论文解读：从「最终答案」反推隐藏思维链，一个重建器通吃所有模型</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14.5px;overflow-x:auto}
+math{overflow-x:auto}
+mrow{font-style:normal}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">推理蒸馏</span><span class="tag">CoT 重建</span><span class="tag">偏好优化</span><span class="tag">模型安全</span>
+<h1>FOPL：从「最终答案」反推隐藏思维链，一个重建器通吃所有模型</h1>
+<p class="meta">Learning Teacher Output Preferences from Final Responses for Reasoning Distillation<br>
+Hongli Shen, Shaopeng Fu, Qinbo Zhang, Jian Li, Di Wang · KAUST / Stony Brook · <a href="https://arxiv.org/abs/2611.30338" target="_blank" rel="noopener">arXiv:2611.30338</a> v1 2026-11-23 · 代码 <a href="https://github.com/renmiamu/fopl" target="_blank" rel="noopener">renmiamu/fopl</a></p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>闭源模型把思维链（CoT）藏起来、只给最终答案来防蒸馏，这篇论文证明这些「可见的最终答案」本身就带着教师推理风格的信号——用一个 4B 重建器做 DPO 偏好学习，就能从「问题 + 最终答案」反推出与目标模型风格一致的思维链，训出来的学生在多个基准上追平甚至超过用原生 CoT 蒸馏的效果，而且对训练时从未见过的模型家族同样有效。</div>
+
+<section>
+<h2>1. 问题：藏起来的思维链，还能被「逆向」吗</h2>
+<p>推理蒸馏的套路很成熟：拿强模型的 CoT 给小模型当训练数据，学生的推理能力显著提升。正因为如此，GPT、Claude、Gemini 这些前沿模型都把原生 CoT 藏起来，只暴露最终答案或简短摘要，防止推理能力被「偷」走。</p>
+<p>但藏得住吗？已有工作给出了几条攻击路径：有的利用 API 特性让模型转写加密推理块，有的用自定义工具调用逼出中间推理。与本文最相关的是 Trace Inversion（Zhang et al., 2026）：用一个「代理模型」的原生 CoT 做 SFT，训出一个重建器，从可见的最终答案反推 CoT。问题是——<strong>每个目标模型都得单独训一个攻击者</strong>，因为不同模型的推理模式（策略、分解方式、记号习惯）差异很大，单一代理上学不到这种差异。</p>
+<p>本文问的关键问题是：<strong>能不能训一个攻击者，对任意目标模型都能重建出「符合它风格」的 CoT？</strong>这要求重建器学会一件事：在不知道目标模型是谁的情况下，判断哪种推理模式和眼前这个最终答案最匹配。</p>
+</section>
+
+<section>
+<h2>2. 方法：FOPL——用偏好优化学「输出偏好」</h2>
+<p>核心观察：同一个问题，不同模型给出的最终答案在措辞、结构、强调重点上各不相同，这些<strong>可见差异就是推理风格的指纹</strong>。要教会重建器利用这些指纹，靠 SFT 模仿是不够的——得让它学会「比较」。FOPL 的做法分三步：</p>
+<h3>2.1 收集数据</h3>
+<p>选 K 个 CoT 可见的代理模型（DeepSeek-V4-Pro、Kimi-K2.5、GLM-5.2、Qwen3-235B-A22B-Thinking-2507），对同一批 500 道 HARDTESTS 编程题，每个模型都生成原生 CoT <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>c</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">c_i</annotation></semantics></math> 和可见最终回答 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>r</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">r_i</annotation></semantics></math>。同一道题，四家模型的回答各不相同——这正是监督信号的来源。</p>
+<h3>2.2 构造偏好对</h3>
+<p>对每条记录，用重建提示（只含问题和最终回答，<strong>不含模型身份</strong>）让生成器池产出「合成 CoT」——即答案对得上、但推理过程是别的模型风格的替代品。然后把<strong>原生 CoT 设为 chosen、合成 CoT 设为 rejected</strong>，在相同的问题-回答条件下配对：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mo stretchy="false">(</mo><mi>q</mi><mo separator="true">,</mo><mtext>  </mtext><mi>r</mi><mo separator="true">,</mo><mtext>  </mtext><munder><munder><msup><mi>c</mi><mtext>native</mtext></msup><mo stretchy="true">⏟</mo></munder><mtext>chosen</mtext></munder><mo separator="true">,</mo><mtext>  </mtext><munder><munder><msup><mi>c</mi><mtext>syn</mtext></msup><mo stretchy="true">⏟</mo></munder><mtext>rejected</mtext></munder><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">(q,\;r,\;\underbrace{c^{\text{native}}}_{\text{chosen}},\;\underbrace{c^{\text{syn}}}_{\text{rejected}})</annotation></semantics></math></div>
+<p class="note">关键设计：偏好对固定了问题和最终回答，只让推理过程不同。重建器要赢得比较，就必须学会从最终回答的可见特征反推「哪种推理过程更可能产出这样的回答」。</p>
+<h3>2.3 DPO 训练</h3>
+<p>用标准 DPO 目标把所有代理的偏好对池在一起，训<strong>一个</strong>重建模型（Qwen3-4B），全程不给模型身份信息：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">D</mi><mi mathvariant="normal">P</mi><mi mathvariant="normal">O</mi></mrow></msub><mo stretchy="false">(</mo><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">)</mo><mo>=</mo><mo>−</mo><mtext> </mtext><msub><mi mathvariant="double-struck">E</mi><mrow><mo stretchy="false">(</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo separator="true">,</mo><mtext> </mtext><msup><mi>c</mi><mo lspace="0em" rspace="0em">+</mo></msup><mo separator="true">,</mo><mtext> </mtext><msup><mi>c</mi><mo lspace="0em" rspace="0em">−</mo></msup><mo stretchy="false">)</mo></mrow></msub><mrow><mo fence="true">[</mo><mi>log</mi><mo>⁡</mo><mi>σ</mi><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mi>β</mi><mi>log</mi><mo>⁡</mo><mfrac><mrow><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msup><mi>c</mi><mo lspace="0em" rspace="0em">+</mo></msup><mo>∣</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo></mrow><mrow><msub><mi>π</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi></mrow></msub><mo stretchy="false">(</mo><msup><mi>c</mi><mo lspace="0em" rspace="0em">+</mo></msup><mo>∣</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo></mrow></mfrac><mo>−</mo><mi>β</mi><mi>log</mi><mo>⁡</mo><mfrac><mrow><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><msup><mi>c</mi><mo lspace="0em" rspace="0em">−</mo></msup><mo>∣</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo></mrow><mrow><msub><mi>π</mi><mrow><mi mathvariant="normal">r</mi><mi mathvariant="normal">e</mi><mi mathvariant="normal">f</mi></mrow></msub><mo stretchy="false">(</mo><msup><mi>c</mi><mo lspace="0em" rspace="0em">−</mo></msup><mo>∣</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo></mrow></mfrac><mo fence="true">)</mo></mrow><mo fence="true">]</mo></mrow></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{DPO}}(\pi_\theta) = -\,\mathbb{E}_{(q,r,\,c^{+},\,c^{-})}\left[\log \sigma\!\left(\beta \log \frac{\pi_\theta(c^{+}\mid q,r)}{\pi_{\mathrm{ref}}(c^{+}\mid q,r)} - \beta \log \frac{\pi_\theta(c^{-}\mid q,r)}{\pi_{\mathrm{ref}}(c^{-}\mid q,r)}\right)\right]</annotation></semantics></math></div>
+<p>训练完成后冻结参数，对任意目标模型只用「问题 + 可见最终回答」就能重建 CoT：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mover accent="true"><mi>c</mi><mo>^</mo></mover><mo>=</mo><msub><mi>R</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\hat{c} = R_\theta(q, r)</annotation></semantics></math></div>
+<p class="note">对比基线 Trace Inversion 的 SFT 目标 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mrow><mi>min</mi><mo>⁡</mo></mrow><mi>θ</mi></msub><mo>−</mo><mi mathvariant="double-struck">E</mi><mo stretchy="false">[</mo><mi>log</mi><mo>⁡</mo><msub><mi>π</mi><mi>θ</mi></msub><mo stretchy="false">(</mo><mi>c</mi><mo>∣</mo><mi>q</mi><mo separator="true">,</mo><mi>r</mi><mo stretchy="false">)</mo><mo stretchy="false">]</mo></mrow><annotation encoding="application/x-tex">\min_\theta -\mathbb{E}[\log \pi_\theta(c\mid q,r)]</annotation></semantics></math> 只教「模仿」，不教「分辨」——这是后面消融实验的核心对照。</p>
+</section>
+
+<section>
+<h2>3. 实验：风格对得上，蒸馏还更强</h2>
+<h3>3.1 实验设置</h3>
+<ul>
+<li>重建器：Qwen3-4B；下游学生：Qwen2.5-1.5B-Base；</li>
+<li>偏好训练家族：DeepSeek、Kimi、GLM、Qwen 四家；<strong>MiMo 作为 held-out 家族</strong>，训练时完全不可见，用来测泛化；</li>
+<li>评估两条线：①重建 CoT 是否像目标模型的原生推理（LLM-as-a-judge，Gemini 3.8 Flash 主判，GPT-5.6-Luna 复核）；②重建 CoT 蒸馏出的学生是否好用（GSM8K、MATH-500、GPQA、OpenBookQA、AdvBench 安全性）。</li>
+</ul>
+<h3>3.2 相似度：对角优势，包括没见过的 MiMo</h3>
+<p>把「参考家族的原生 CoT」固定，只换条件化用的最终回答来源，让裁判二选一。结果呈现干净的对角优势：</p>
+<table>
+<tr><th>原生参考 ↓ / 回答来源 →</th><th>DeepSeek</th><th>Kimi</th><th>GLM</th><th>Qwen</th><th>MiMo (OOD)</th></tr>
+<tr><td>DeepSeek</td><td class="hl">57.46</td><td>45.85</td><td>39.85</td><td>40.98</td><td>43.48</td></tr>
+<tr><td>Kimi</td><td>32.41</td><td class="hl">62.98</td><td>35.52</td><td>42.46</td><td>37.69</td></tr>
+<tr><td>GLM</td><td>41.23</td><td>43.23</td><td class="hl">57.02</td><td>44.60</td><td>42.86</td></tr>
+<tr><td>Qwen</td><td>34.84</td><td>37.34</td><td>32.41</td><td class="hl">65.39</td><td>33.83</td></tr>
+<tr><td>MiMo (OOD)</td><td>36.90</td><td>43.98</td><td>36.31</td><td>40.73</td><td class="hl">60.51</td></tr>
+</table>
+<p class="note">数值为 tie-aware 胜率（%）。加粗对角线 = 用该家族自己的最终回答做条件化。所有错配条件都低于 50%。</p>
+<p>最有说服力的是 MiMo 那一行：它从未参与偏好训练，但用它的回答做条件化，重建结果仍以 60.51% 的胜率更像它的原生 CoT。这说明重建器学到的不是「四个训练家族的风格速查表」，而是<strong>从最终回答的可见线索泛化出来的风格匹配能力</strong>。裁判换成 GPT-5.6-Luna 复核，对角结构不变（两裁判一致率 70.05%）。</p>
+<h3>3.3 蒸馏效果：反推的 CoT 能打平甚至超过原生 CoT</h3>
+<p>下游蒸馏（以 DeepSeek 回答为条件，学生为 Qwen2.5-1.5B-Base）：</p>
+<table>
+<tr><th>监督信号</th><th>GSM8K</th><th>MATH-500</th><th>GPQA</th><th>OpenBookQA</th><th>平均提升</th></tr>
+<tr><td>基座模型</td><td>27.22</td><td>15.00</td><td>3.54</td><td>0.20</td><td>–</td></tr>
+<tr><td>提示合成 CoT（DeepSeek 生成）</td><td>45.94</td><td>24.80</td><td>15.66</td><td>47.30</td><td>+18.74</td></tr>
+<tr><td class="hl">FOPL 重建 CoT</td><td class="hl">57.85</td><td class="hl">33.20</td><td class="hl">19.19</td><td>50.30</td><td class="hl">+23.35</td></tr>
+<tr><td>原生 CoT（oracle 参考）</td><td>49.28</td><td>23.00</td><td>16.67</td><td>56.90</td><td>+21.79</td></tr>
+</table>
+<p>三个要点：</p>
+<ul>
+<li><strong>全面胜过提示合成</strong>：四个回答来源上，FOPL 的平均提升（+18.07 ~ +23.35）都是重建方法里最高的，且在 GSM8K、MATH-500、GPQA 上全部领先，不是靠某个任务或某个来源撑起来的；</li>
+<li><strong>12/12 胜过 Trace Inversion</strong>：与 SFT 路线的现有方法对比，FOPL 在 3 个来源 × 4 个基准上全胜（例如 DeepSeek 来源下 GSM8K 57.85 vs 28.51）；</li>
+<li><strong>常常超过原生 CoT</strong>：12 组对比里 10 组（GSM8K/MATH-500/GPQA）FOPL 反超 oracle——作者的解释是原生 CoT 只是教师「原始输出偏好」的参考，不是学生性能的上界；但 AdvBench 安全性上原生 CoT 在 4 组里赢 3 组，优势不均匀。</li>
+</ul>
+<p>对闭源模型的迁移测试：对 GPT-5.6-Luna（原生 CoT 完全不可得），FOPL 相比「只用最终回答蒸馏」在 GSM8K 和 MATH-500 上分别提升 <strong>8.93 和 6.40 个百分点</strong>。</p>
+<h3>3.4 消融：偏好学习到底贡献了什么</h3>
+<ul>
+<li><strong>DPO vs SFT</strong>：同样的原生 CoT 当正例，SFT 只学模仿，DPO 额外用合成 CoT 当负例。下游学生五个基准全涨（+2.42 ~ +16.70 pp），风格匹配胜率也全面更高——「学会分辨」比「学会模仿」值钱，且 held-out 的 MiMo 上差距最大（+6.93）；</li>
+<li><strong>去掉重建、只给最终回答</strong>：学生表现明显更差，说明收益来自「把最终回答里的信息转化成结构化推理示范」，而不是单纯多见了教师的可见输出；</li>
+<li><strong>数据规模</strong>：1250 条（25%）重建数据就能全面超过基座，5000 条基本到顶——重建监督的数据效率不错。</li>
+</ul>
+</section>
+
+<section>
+<h2>4. 点评：克制的好论文，以及它的双刃剑属性</h2>
+<h3>值得肯定的地方</h3>
+<ul>
+<li><strong>问题定义干净</strong>：从「每个目标单独训攻击者」推进到「一个攻击者通吃」，且不依赖 API 特性或提示注入，只靠公开可见的输入输出——这是对威胁模型更现实的刻画；</li>
+<li><strong>方法极简</strong>：没有新架构、新损失，就是把 DPO 的「比较结构」用对了地方——固定问题与回答、只变推理过程，让偏好信号精确对准「风格匹配」这一个维度；</li>
+<li><strong>行文罕见地克制</strong>：作者反复强调重建的 CoT 不是目标模型内部推理的逐字记录，只是「与可见输出兼容的重建」，MiMo 的结果也只解读为「证据」而非「证明」。这种不越界的写法在攻击类论文里不多见。</li>
+</ul>
+<h3>局限与值得追问的</h3>
+<ul>
+<li><strong>评估依赖 LLM-as-a-judge</strong>：相似度结论由裁判模型说了算，虽然做了双裁判鲁棒性检验（一致率 70%），但「风格像」本身是个软指标，70% 的一致率意味着相当一部分判断在裁判之间摇摆；</li>
+<li><strong>「超过原生 CoT」需要谨慎解读</strong>：原生 CoT 在安全性上仍占优，且 FOPL 反超的场景集中在数学/科学推理——更可能是重建轨迹更「规整易学」，而非真的比原生推理更有信息量；</li>
+<li><strong>防御侧的启示同样重要</strong>：这篇论文等于量化了「最终回答泄露推理风格」的程度——对齐、安全团队应该把「可见输出的风格指纹」纳入防蒸馏的威胁模型。只藏 CoT 不改最终回答的呈现方式，防不住这类攻击；</li>
+<li><strong>偏好对构造的规模</strong>：训练只用 500 道编程题 × 4 家代理，规模不大却足够泛化，说明「比较信号」的样本效率确实高于「模仿信号」，这一点对做偏好学习的人也有独立参考价值。</li>
+</ul>
+<p>整体看，这是「CoT 重建」这条线上把<strong>模型无关性</strong>补齐的工作：Trace Inversion 证明了能反推，FOPL 证明了能泛化。对做蒸馏的人来说，闭源教师的 CoT 从此多了一条不依赖任何 API 漏洞的获取路径；对做模型安全的人来说，这是一份值得认真对待的攻击面测绘报告。</p>
+</section>
+
+<footer>
+解读时间：2026-11-24 · 解读：灵光（受托代读）· 原文：<a href="https://arxiv.org/abs/2611.30338" target="_blank" rel="noopener">arXiv:2611.30338</a>（KAUST / Stony Brook，代码 github.com/renmiamu/fopl）<br>
+更多解读见 <a href="/papers/" target="_blank" rel="noopener">papers/ 索引</a>
+</footer>
+
+</div>
+</body>
+</html>
