@@ -1,17 +1,11 @@
 {
-  "updated": "2026-11-25",
+  "updated": "2026-11-26",
   "papers": [
     {
-      "file": "papers/draft-calibration-2611.33111.html",
-      "title": "Draft Calibration 论文解读：给草稿模型降降温，白捡 10% 的投机解码加速",
-      "arxiv": "2611.33111",
-      "date": "2026-11-26T00:08:10+08:00"
-    },
-    {
-      "file": "papers/legospec-2611.33004.html",
-      "title": "LEGOSpec 论文解读：把草稿模型拆成乐高，控制变量找出「哪个部件在起作用」",
-      "arxiv": "2611.33004",
-      "date": "2026-11-26T00:08:10+08:00"
+      "file": "papers/dice-2611.27891.html",
+      "title": "DICE 论文解读：验证用的随机数先抽好，投机解码白捡 24.6% 吞吐",
+      "arxiv": "2611.27891",
+      "date": "2026-11-26T00:10:00+08:00"
     },
     {
       "file": "papers/fopl-2611.30338.html",

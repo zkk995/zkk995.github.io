@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DICE 论文解读：验证用的随机数先抽好，投机解码白捡 24.6% 吞吐</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14.5px;overflow-x:auto}
+math{overflow-x:auto}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+.warn{background:var(--orangebg);border:1px solid #ecd5bd;border-radius:10px;padding:12px 16px;margin:12px 0}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">投机解码</span><span class="tag">无损加速</span><span class="tag">草稿树</span><span class="tag">异步预取</span><span class="tag">训练无关</span>
+<h1>DICE：验证用的随机数先抽好，投机解码白捡 24.6% 吞吐</h1>
+<p class="meta">Speculative Decoding Is Less Speculative Than You Think<br>
+Guanning Zeng, Andrea Zanette · Carnegie Mellon University · <a href="https://arxiv.org/abs/2611.27891" target="_blank" rel="noopener">arXiv:2611.27891</a> v1 2026-11-20</p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>投机解码的成败取决于「把有限的起草算力花在目标模型真正会走的路径上」，而这背后有两份不确定性——目标模型的预测（要花一次前向才知道）和采样随机数（<strong>起草之前就能定下来</strong>）。DICE 把后者变成免费信息：预先抽好验证要用的随机数，让起草和验证共用同一份「骰子」，草稿树和预取缓存都朝「这次采样真正会接受的方向」倾斜。不改草稿模型、不改输出分布，在 18 组模型-后端配置上全部拿到加速，最高比强基线快 24.6%。</div>
+
+<section>
+<h2>1. 问题：起草算力该花在哪，其实有一半答案早就知道了</h2>
+<p>投机解码的效率核心是个算力分配问题：草稿模型不可能穷举所有续写路径，树往哪边长、缓存预取哪些草稿，决定了验证时能白拿多少 token。以往的工作几乎全在攻第一份不确定性——把草稿分布 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>q</mi></mrow><annotation encoding="application/x-tex">q</annotation></semantics></math> 往目标分布 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>p</mi></mrow><annotation encoding="application/x-tex">p</annotation></semantics></math> 上靠（EAGLE 系列、各种训练方法）。本文盯住的是第二份：<strong>采样随机性</strong>。</p>
+<p>标准投机采样里，提案 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math> 被接受的条件是：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mi>u</mi><mtext> </mtext><mi>q</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>≤</mo><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">u\,q(x) \le p(x)</annotation></semantics></math></div>
+<p>关键观察：给定 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>q</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>=</mo><mn>0.5</mn></mrow><annotation encoding="application/x-tex">q(x)=0.5</annotation></semantics></math>，如果这次抽到的 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>u</mi><mo>=</mo><mn>0.1</mn></mrow><annotation encoding="application/x-tex">u=0.1</annotation></semantics></math>，那只要 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>≥</mo><mn>0.05</mn></mrow><annotation encoding="application/x-tex">p(x)\ge 0.05</annotation></semantics></math> 就会接受——值得顺着 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math> 往深里看；如果 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>u</mi><mo>=</mo><mn>0.9</mn></mrow><annotation encoding="application/x-tex">u=0.9</annotation></semantics></math>，则要 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>p</mi><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mo>≥</mo><mn>0.45</mn></mrow><annotation encoding="application/x-tex">p(x)\ge 0.45</annotation></semantics></math> 才行——不如多备几条退路。<strong>目标概率还不知道，但接受阈值已经知道了。</strong>同一份草稿预测，配上不同的已知随机数，最优的算力分配完全不同。目标采样用 Gumbel-max 技巧实现时，扰动 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>g</mi></mrow><annotation encoding="application/x-tex">g</annotation></semantics></math> 同样可以在起草前生成。</p>
+</section>
+
+<section>
+<h2>2. 方法：把「骰子」同步给起草方和验证方</h2>
+<p>DICE（Draw-Informed Candidate Selection）的做法：验证要用的随机数（接受判定的均匀数 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>u</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">u_i</annotation></semantics></math>、目标采样的 Gumbel 向量 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>g</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">g_i</annotation></semantics></math>）<strong>先抽好</strong>，起草策略和目标验证器共用同一份。草稿模型照常用，输出分布分毫不改——同样的随机数下，生成序列与自回归目标采样<strong>逐 token 一致</strong>（附录有正确性证明）。两个落点：</p>
+
+<h3>2.1 种子感知草稿树</h3>
+<p>在每个节点 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>x</mi></mrow><annotation encoding="application/x-tex">x</annotation></semantics></math>，用草稿 logits <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>d</mi><mi>x</mi></msub></mrow><annotation encoding="application/x-tex">d_x</annotation></semantics></math> 加上已知的 Gumbel 扰动，估计目标的下一个 token 选择：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>r</mi><mo>^</mo></mover><mi>x</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><msub><mrow><mi mathvariant="normal">s</mi><mi mathvariant="normal">o</mi><mi mathvariant="normal">f</mi><mi mathvariant="normal">t</mi><mi mathvariant="normal">m</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">x</mi></mrow><mi>v</mi></msub><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mfrac><mrow><mi>α</mi><mtext> </mtext><msub><mi>d</mi><mi>x</mi></msub><mo>+</mo><mi>T</mi><mtext> </mtext><msub><mi>g</mi><mrow><mi mathvariant="normal">∣</mi><mi>x</mi><mi mathvariant="normal">∣</mi><mo>+</mo><mn>1</mn></mrow></msub></mrow><mi>σ</mi></mfrac><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">\hat r_x(v) = \mathrm{softmax}_v\!\left(\frac{\alpha\, d_x + T\, g_{|x|+1}}{\sigma}\right)</annotation></semantics></math></div>
+<p>整条路径的得分沿路累乘，<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mover accent="true"><mi>w</mi><mo>^</mo></mover><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\hat w(x)</annotation></semantics></math> 估计「这个节点会被验证访问到」的可能性：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><mover accent="true"><mi>w</mi><mo>^</mo></mover><mo stretchy="false">(</mo><mi mathvariant="normal">∅</mi><mo stretchy="false">)</mo><mo>=</mo><mn>1</mn><mo separator="true">,</mo><mspace width="2em"/><mover accent="true"><mi>w</mi><mo>^</mo></mover><mo stretchy="false">(</mo><mi>x</mi><mi>v</mi><mo stretchy="false">)</mo><mo>=</mo><mover accent="true"><mi>w</mi><mo>^</mo></mover><mo stretchy="false">(</mo><mi>x</mi><mo stretchy="false">)</mo><mtext> </mtext><msub><mover accent="true"><mi>r</mi><mo>^</mo></mover><mi>x</mi></msub><mo stretchy="false">(</mo><mi>v</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\hat w(\varnothing)=1,\qquad \hat w(xv) = \hat w(x)\,\hat r_x(v)</annotation></semantics></math></div>
+<p>这套得分贯穿树构建全程：每步选哪些子 token、扩展哪个节点、最终挑哪 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>N</mi></mrow><annotation encoding="application/x-tex">N</annotation></semantics></math> 个节点送去验证，全由它说了算。超参 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false">(</mo><mi>α</mi><mo separator="true">,</mo><mi>σ</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">(\alpha,\sigma)</annotation></semantics></math> 每对目标-草稿模型只校准一次，头 2000 个节点（约 1–3 条 prompt）就够。EAGLE-2/3/4、独立小草稿器、MTP 模块全部即插即用。</p>
+
+<h3>2.2 种子感知异步预取</h3>
+<p>SSD 这类方法在验证当前提案时，预先给下一轮可能的验证结果 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mo stretchy="false">(</mo><mi>k</mi><mo separator="true">,</mo><mi>v</mi><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">(k,v)</annotation></semantics></math>（接受长度 + 修正 token）备好草稿，缓存只能放 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>B</mi></mrow><annotation encoding="application/x-tex">B</annotation></semantics></math> 条。DICE 用已知随机数估计每个结果的可能性：接受长度由 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>u</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">u_i</annotation></semantics></math> 预测——对未知概率比 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>ρ</mi><mi>i</mi></msub><mo>=</mo><msub><mi>p</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mi mathvariant="normal">/</mi><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\rho_i=p_i(x_i)/q_i(x_i)</annotation></semantics></math> 做最大熵建模（假设草稿校准 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="double-struck">E</mi><mo stretchy="false">[</mo><msub><mi>ρ</mi><mi>i</mi></msub><mo fence="true" stretchy="false">|</mo><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">)</mo><mo stretchy="false">]</mo><mo>=</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\mathbb{E}[\rho_i|q_i(x_i)]=1</annotation></semantics></math>，得截断指数分布），再算接受概率：</p>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mover accent="true"><mi>η</mi><mo>^</mo></mover><mi>i</mi></msub><mo>=</mo><munder><mrow><mi>Pr</mi><mo>⁡</mo></mrow><mrow><mi>ρ</mi><mo>∼</mo><msub><mi>f</mi><mrow><msub><mi>q</mi><mi>i</mi></msub><mo stretchy="false">(</mo><msub><mi>x</mi><mi>i</mi></msub><mo stretchy="false">)</mo></mrow></msub></mrow></munder><mtext> ⁣</mtext><mrow><mo fence="true">(</mo><mi>ρ</mi><mo>≥</mo><msub><mi>u</mi><mi>i</mi></msub><mo fence="true">)</mo></mrow></mrow><annotation encoding="application/x-tex">\hat\eta_i = \Pr_{\rho\sim f_{q_i(x_i)}}\!\left(\rho \ge u_i\right)</annotation></semantics></math></div>
+<p>修正 token 用同一套比例模型加已知 Gumbel 向量预测，两者相乘得到每个验证结果的估计概率，取 top-<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>B</mi></mrow><annotation encoding="application/x-tex">B</annotation></semantics></math> 去预取。草稿本身不变，只是「备哪几份」变聪明了。</p>
+
+<h3>2.3 工程实现</h3>
+<p>随机数用「请求种子 + 绝对 token 位置（+ 词表下标）」索引的确定性计数器哈希按需生成，接受、目标采样、草稿提案各走独立随机流。起草和验证即使在<strong>不同 GPU 上</strong>也能各自算出同一份随机数，不用存也不用传；打分融合进现有 GPU 候选选择核，能被 CUDA graph 捕获，<strong>零额外前向</strong>。</p>
+</section>
+
+<section>
+<h2>3. 实验：18 组配置全赢，温度越高赚越多</h2>
+<h3>3.1 草稿树解码</h3>
+<p>16 组目标-草稿对（独立草稿器 + EAGLE-2/3/4 + MTP），HuggingFace / SGLang / vLLM 三种后端，H200、T=1、并发 1。DICE 在<strong>每一个</strong>配置上都超过原基线：Spec-Bench 提升 4.3–21.5%，SPEED-Bench 提升 5.6–24.6%。挑几行看：</p>
+<table>
+<tr><th>目标 / 草稿</th><th>后端</th><th>Spec-Bench 增益</th><th>SPEED-Bench 增益</th></tr>
+<tr><td>Vicuna-33B / Vicuna-7B</td><td>HF</td><td>+9.64%</td><td>+11.46%</td></tr>
+<tr><td>Llama-3.1-70B / Llama-3.2-1B</td><td>HF</td><td>+4.34%</td><td>+15.95%</td></tr>
+<tr><td class="hl">Llama-3.1-8B / EAGLE-3</td><td>HF</td><td>+21.50%</td><td class="hl">+24.62%</td></tr>
+<tr><td>Llama-3.1-70B / EAGLE-3</td><td>HF</td><td>+17.80%</td><td>+18.00%</td></tr>
+<tr><td>Qwen3.8-27B / EAGLE-4</td><td>vLLM</td><td>+14.91%</td><td>+20.88%</td></tr>
+<tr><td>Qwen3.6-35B / MTP</td><td>SGLang</td><td>+10.86%</td><td>+10.20%</td></tr>
+</table>
+<p class="note">增益是相对各自原树方法（EAGLE-4、OPT-Tree 等）的吞吐提升；最高一档 24.6% 出现在 Llama-3.1-8B/EAGLE-3 的 SPEED-Bench 上。</p>
+<p>两个很实用的趋势：<strong>温度越高赚得越多</strong>——T=0 时大家都是贪心验证、速度相同；温度升高后固定预算的树越来越盖不住采样路径，EAGLE-4 吞吐下滑，DICE 因为树是照着「真会用的随机数」搭的，下滑慢得多。<strong>并发越高优势越稳</strong>——并发 1 到 64 全程最快，SGLang/vLLM 里领先最强基线 2–18% / 8–20%；并发 64 时 DFlash2 和 DSpark 已经掉到比自回归还慢，DICE 仍保持 1.19× / 1.28×。</p>
+
+<h3>3.2 异步预取</h3>
+<p>把 SSD 的预取选择策略换成 DICE，四个模型对的缓存命中率从 45.6–67.6% 提到 69.8–80.7%，吞吐多 4.0–13.7%：</p>
+<table>
+<tr><th>目标 / 草稿</th><th>基线命中</th><th>DICE 命中</th><th>吞吐增益</th></tr>
+<tr><td>Llama-3.1-70B-Instruct / Llama-3.2-1B</td><td>59.8%</td><td>77.9%</td><td>+13.21%</td></tr>
+<tr><td>Qwen3-32B / Qwen3-0.6B</td><td>67.6%</td><td>75.2%</td><td>+4.03%</td></tr>
+<tr><td>Llama-3.1-70B-Base / Llama-3.2-1B-Base</td><td>45.6%</td><td>69.8%</td><td>+13.65%</td></tr>
+<tr><td>Llama-3.1-8B-Instruct / Llama-3.2-1B</td><td>56.9%</td><td>80.7%</td><td>+12.04%</td></tr>
+</table>
+<p>和 Saguaro 采样（改写草稿分布让结果更好猜，代价是接受率下降）正交互补：每个 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>C</mi></mrow><annotation encoding="application/x-tex">C</annotation></semantics></math> 取值下 DICE 都再加 13–18 个点命中率，两者叠加到 177 tok/s。</p>
+
+<h3>3.3 增益到底从哪来：消融做得干净</h3>
+<ul>
+<li><strong>不是加噪声的功劳</strong>：把随机数换成与验证无关的打乱版本，接受长度反而掉 11–14%；同步真随机数则涨 11–24%。增益来自「知道目标真会用哪份骰子」，不是扰动本身。</li>
+<li><strong>增益必须作用在预算分配上</strong>：只用随机数选子节点、预算仍按草稿概率花，大部分收益消失。DICE 让树在第一个 token 之后的每个深度都更盖得住目标的真实路径，深度越深差距越大。</li>
+<li><strong>预算等价换算</strong>：EAGLE-4 要 64 个节点才能达到 DICE 16 个节点的接受长度；SSD 要 24 条缓存才追平 DICE 8 条的命中率。</li>
+<li><strong>两类随机数各有贡献</strong>：接受数 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><msub><mi>u</mi><mi>i</mi></msub></mrow><annotation encoding="application/x-tex">u_i</annotation></semantics></math> 指出验证会在哪停，Gumbel 向量指出后面跟哪个 token；单用任一类把命中率从 59.8% 提到 66.9–67.9%，合用 76.2%。</li>
+<li><strong>不需要精确建模目标</strong>：最朴素的 plug-in 规则（α=σ=1）就有 9–22% 增益，校准再加 1–2 个点，换神经预测器最多再加 1.5 个点。增益靠的是「用真随机数排序候选」，不是「精确算出目标分布」。</li>
+</ul>
+</section>
+
+<section>
+<h2>4. 我的看法</h2>
+<ul>
+<li><strong>这是那种「说出来人人都懊悔没先想到」的观察</strong>：采样随机数本来就是要生成的，把它从「验证之后才揭晓」挪到「起草之前就同步」，等于把一份已经付费的信息变成了决策依据。整个方法没有新模型、没有训练、没有分布改动，却是在生产引擎（SGLang/vLLM）里实打实的两位数吞吐增益——性价比极高的一类工作。</li>
+<li><strong>与近期几条线正交</strong>：ALD（arXiv:2611.27477）压的是草稿模型<strong>内部</strong>的串行，PEARL/DPara 压的是起草与验证<strong>之间</strong>的串行，DICE 压的是「算力往哪分配」——三者叠在同一个草稿器上理论上互不冲突。和 Saguaro 的组合实验也证明了互补性。</li>
+<li><strong>两个落地前提要留意</strong>：一是预取侧假设草稿校准（<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi mathvariant="double-struck">E</mi><mo stretchy="false">[</mo><mi>ρ</mi><mo fence="true" stretchy="false">|</mo><mi>q</mi><mo stretchy="false">]</mo><mo>=</mo><mn>1</mn></mrow><annotation encoding="application/x-tex">\mathbb{E}[\rho|q]=1</annotation></semantics></math>），草稿器没校准好时估计会偏，好在消融显示对估计形式不敏感；二是确定性哈希随机数要求引擎端到端接管采样种子——用户自带种子、或引擎 RNG 策略不同的场景，接入时要动采样管线，这不是纯插件能覆盖的。</li>
+<li><strong>天花板仍在草稿器</strong>：DICE 优化的是「给定草稿质量下的分配效率」，草稿分布本身离目标太远时，再聪明的分配也省不出 token。它是现有草稿器生态（EAGLE/MTP）的放大器，不是替代品。</li>
+</ul>
+</section>
+
+<footer>
+解读基于 arXiv:2611.27891v1（2026-11-20）原文；数据引自论文表 1、表 2 及图 5–7。页面由灵光整理，<a href="https://zkk995.github.io/papers/" target="_blank" rel="noopener">返回论文列表</a>。
+</footer>
+
+</div>
+</body>
+</html>
