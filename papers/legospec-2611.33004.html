@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEGOSpec 论文解读：把草稿模型拆成乐高，控制变量找出「哪个部件在起作用」</title>
+<style>
+:root{--bg:#f6f7f9;--ink:#1c2330;--muted:#5b6472;--line:#dde3ea;--blue:#2563a8;--bluebg:#eaf1f8;--green:#2f7d5d;--greenbg:#e8f4ee;--orange:#b05e1e;--orangebg:#f9efe3;--card:#ffffff}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,'PingFang SC','Microsoft YaHei',sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:28px 20px 64px}
+header.hero{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:26px 26px 20px;margin-bottom:22px}
+.tag{display:inline-block;font-size:12.5px;color:var(--blue);background:var(--bluebg);border-radius:6px;padding:2px 10px;margin:0 6px 8px 0}
+h1{font-size:25px;line-height:1.4;margin:6px 0 10px}
+.meta{color:var(--muted);font-size:14px;margin-top:6px}
+.oneline{background:linear-gradient(90deg,var(--bluebg),var(--greenbg));border:1px solid var(--line);border-radius:12px;padding:16px 20px;margin:22px 0;font-size:16.5px}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 26px;margin:18px 0}
+h2{font-size:20px;margin:0 0 12px;padding-bottom:8px;border-bottom:2px solid var(--bluebg)}
+h3{font-size:16.5px;margin:20px 0 6px;color:var(--blue)}
+p{margin:10px 0}
+ul{padding-left:22px;margin:10px 0}
+li{margin:6px 0}
+.formula{background:#f2f5f9;border:1px solid var(--line);border-radius:10px;padding:10px 14px;margin:12px 0;font-size:14.5px;overflow-x:auto}
+math{overflow-x:auto}
+mrow{font-style:normal}
+.note{font-size:13.5px;color:var(--muted);margin:4px 0 0}
+table{border-collapse:collapse;width:100%;font-size:13px;margin:12px 0}
+th,td{border:1px solid var(--line);padding:6px 8px;text-align:right}
+th{background:var(--bluebg);color:var(--ink)}
+td:first-child,th:first-child{text-align:left}
+.hl{background:var(--greenbg);font-weight:600}
+footer{color:var(--muted);font-size:13.5px;margin-top:24px;line-height:1.7}
+a{color:var(--blue)}
+@media(max-width:600px){.wrap{padding:18px 12px 48px}section{padding:18px 16px}h1{font-size:21px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+<span class="tag">投机解码</span><span class="tag">草稿模型训练</span><span class="tag">组件化框架</span><span class="tag">训练系统</span>
+<h1>LEGOSpec：把草稿模型拆成乐高，控制变量找出「哪个部件在起作用」</h1>
+<p class="meta">LEGOSpec: A Composable and Efficient Framework for Speculative Draft Design and Training<br>
+Hanzhen Wang, Jiaming Xu, Guohao Dai · 上海交大 / 无问芯穹 / SII · <a href="https://arxiv.org/abs/2611.33004" target="_blank" rel="noopener">arXiv:2611.33004</a> v1 2026-11-24 · 代码与权重 <a href="https://github.com/SJTU-DAI-Sys/LEGOSpec" target="_blank" rel="noopener">SJTU-DAI-Sys/LEGOSpec</a></p>
+</header>
+
+<div class="oneline"><strong>一句话：</strong>草稿模型论文都在报「完整配方」，训练配置各不相同，根本分不清收益来自架构还是训练。LEGOSpec 把草稿拆成 Context / Backbone / Proposal / Objective 四块积木，在统一训练设施下做控制变量实验，得出三条结论，并据此拼出通用草稿 DFlux——常规基准接受长度超最强基线最高 13.7%、长上下文最高 34.7%，训练吞吐比 SpecForge 高 79%、离线监督准备快 3.11 倍。</div>
+
+<section>
+<h2>1. 动机：训练配置的噪音，盖住了架构的信号</h2>
+<p>投机解码的草稿模型这一年爆发式迭代：EAGLE-3、DFlash、DFlare、DSpark、DLite、DFlash2……但每篇论文都只报「完整配方 + 自己的训练配置」。LEGOSpec 用一个实验戳破了这层窗户纸（原文图 1）：在 DFlash 上，<strong>换个优化器、或把训练集从 80K 扩到 400K，带来的接受长度变化就能追平甚至超过加一个 Markov 头的架构改动</strong>；而换数据源反而会掉点。</p>
+<p>换句话说，文献里「方法 A 比方法 B 好」的结论里，可能混着大量训练配置的差异。要做严肃的组件研究，得有统一的基础设施——这就是 LEGOSpec 的定位。</p>
+</section>
+
+<section>
+<h2>2. 框架：四块积木 + 统一训练设施</h2>
+<p>LEGOSpec 把草稿模型沿四个轴分解：</p>
+<ul>
+<li><strong>Context</strong>：选哪些目标模型层特征、怎么融合（DFlash 的投影拼接 vs DFlare 的标量加权）；</li>
+<li><strong>Backbone</strong>：处理历史上下文、建模草稿块内依赖（MHA / GQA / SWA / GDN / MLA）；</li>
+<li><strong>Proposal</strong>：产出候选分布，可选地条件于前序 token（RNN / Markov / Selector 等）；</li>
+<li><strong>Objective</strong>：监督信号（CE / KL / TV / Mix / NLA / D-PACE / D-PAL）。</li>
+</ul>
+<p>四块通过 recipe adapter 接到同一个训练器上，组件替换不用改训练循环；目标特征可在线提取或离线缓存，同一目标模型的监督可跨配方复用。控制变量实验围绕一个共享参考配置展开（DFlash context + 5 层 GQA + RNN proposal + Mix 损失，80K 样本）。</p>
+</section>
+
+<section>
+<h2>3. 三条结论</h2>
+<h3>结论 1：骨干按负载选——短上下文用全注意力，长上下文用 SWA/卷积</h3>
+<p>同等参数量下，稠密 MHA/GQA 在短上下文（Regular）上占优，SWA 和 GDN 在长上下文（Long，32K–64K 输入）上反超：SWA 把 Long 从 2.450 提到 3.023，GQA 加卷积提到 2.950。机制解释很清晰：上下文变长时，全注意力的历史 key 集不断膨胀，注意力质量被历史分走，<strong>草稿块内的信息交换被稀释</strong>（2K→32K 时多数 query 头分给块内的注意力质量明显下降）；SWA 用固定窗口截断历史，块内注意力几乎不受影响。卷积则提供一条独立于注意力的块内通路——而且两者收益会互相抵消：SWA 窗口收窄时卷积的增益递减，窗口为 1 时转负，说明它们在补同一件事。</p>
+<p>另一笔账是显存：SWA/GDN 的历史状态有界，缓存比全注意力小约 500 倍。同内存预算下，SWA 让 Qwen3.5-9B 的最大可用上下文从 18.5K 扩到 133K（7.19 倍）。</p>
+<h3>结论 2：Proposal 要在「接受」和「延迟」之间讨价还价</h3>
+<p>RNN 逐位置递归更新，接受长度最高，但每个采样步后都有额外计算，全在起草的关键路径上；Selector 把相邻候选的转移打分全部并行算，接受略低，但提议延迟低，端到端加速反而接近 RNN。结论：依赖校正的价值 = 存活 token 数 × 它拖慢验证启动的时间。理想方案是<strong>保留并行打分、同时支持全词表分布校正</strong>——这直接催生了 DFlux 的 R-Corrector。</p>
+<h3>结论 3：目标函数要「局部匹配分布 + 块级优化接受长度」</h3>
+<p>两个层面的发现：</p>
+<ul>
+<li><strong>局部层面</strong>：分布匹配类损失（KL、Mix、NLA）优于只用标签的 CE；但单独的 TV 损失反而垫底——对目标概率高、草稿概率极低的 token，TV 梯度接近零，收敛慢。Mix（<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mn>0.1</mn><mtext> </mtext><mrow><mi mathvariant="normal">C</mi><mi mathvariant="normal">E</mi></mrow><mo>+</mo><mn>0.9</mn><mtext> </mtext><mrow><mi mathvariant="normal">T</mi><mi mathvariant="normal">V</mi></mrow></mrow><annotation encoding="application/x-tex">0.1\,\mathrm{CE}+0.9\,\mathrm{TV}</annotation></semantics></math>）用 CE 项在低重叠区补梯度、TV 项在收敛区对齐分布，两头都占。</li>
+<li><strong>块级层面</strong>：后面的 token 只有在前缀全被接受时才贡献接受长度。D-PACE、D-PAL 这类前缀感知加权在 Regular 上都超过了对应的局部损失，说明<strong>接受长度应该作为聚合目标</strong>。</li>
+</ul>
+</section>
+
+<section>
+<h2>4. DFlux：结论拼出来的通用草稿</h2>
+<p>三条结论各取最优，拼成 DFlux：</p>
+<ul>
+<li><strong>SWA–GQA 混合骨干</strong>：4 层 SWA + 1 层稠密 GQA + 块内卷积——SWA 保块内注意力、卷积补局部依赖、最后一层 GQA 看全历史，只有它保留随上下文增长的缓存；</li>
+<li><strong>Residual Corrector（R-Corrector）</strong>：实测 top-16 候选覆盖了 99% 的目标–草稿分布重叠，于是只对 top-<math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi></mrow><annotation encoding="application/x-tex">k</annotation></semantics></math> 候选做校正、其余词表沿用骨干 logits。校正量是 <math xmlns="http://www.w3.org/1998/Math/MathML"><semantics><mrow><mi>k</mi><mo>×</mo><mi>k</mi></mrow><annotation encoding="application/x-tex">k\times k</annotation></semantics></math> 的表，所有位置并行计算；配合拒绝采样，理论上仍严格保持目标分布；</li>
+<li><strong>层级监督</strong>：骨干输出用辅助 KL（保证候选覆盖），最终输出用 D-PAL（优化块级接受长度），两者都用全词表。</li>
+</ul>
+<div class="formula"><math xmlns="http://www.w3.org/1998/Math/MathML" display="block"><semantics><mrow><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">t</mi><mi mathvariant="normal">r</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">n</mi></mrow></msub><mo>=</mo><msub><mi>λ</mi><mrow><mi mathvariant="normal">a</mi><mi mathvariant="normal">u</mi><mi mathvariant="normal">x</mi></mrow></msub><mtext> </mtext><msub><mi mathvariant="script">L</mi><mrow><mi mathvariant="normal">K</mi><mi mathvariant="normal">L</mi></mrow></msub><mo stretchy="false">(</mo><mi>p</mi><mo separator="true">,</mo><msup><mi>q</mi><mrow><mi mathvariant="normal">b</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">s</mi><mi mathvariant="normal">e</mi></mrow></msup><mo stretchy="false">)</mo><mo>+</mo><msub><mi mathvariant="script">L</mi><mtext>D-PAL</mtext></msub><mo stretchy="false">(</mo><mi>p</mi><mo separator="true">,</mo><msup><mi>q</mi><mrow><mi mathvariant="normal">f</mi><mi mathvariant="normal">i</mi><mi mathvariant="normal">n</mi><mi mathvariant="normal">a</mi><mi mathvariant="normal">l</mi></mrow></msup><mo stretchy="false">)</mo></mrow><annotation encoding="application/x-tex">\mathcal{L}_{\mathrm{train}}=\lambda_{\mathrm{aux}}\,\mathcal{L}_{\mathrm{KL}}(p,q^{\mathrm{base}})+\mathcal{L}_{\text{D-PAL}}(p,q^{\mathrm{final}})</annotation></semantics></math></div>
+<p>消融显示每个部件都在涨：混合骨干把 Long 提高 14.6–24.5%；R-Corrector 在 Mix 损失下 Regular 超过 RNN；层级监督再上一层。最终在 Qwen3-4B、Qwen3.6-35B-A3B、Gemma4-12B-it 三个目标模型、10 个 workload 上全部第一：</p>
+<table>
+<tr><th>对比</th><th>结果</th></tr>
+<tr><td>vs 最强基线（接受长度）</td><td>常规基准最高 <span class="hl">+13.7%</span>（GSM8K），长上下文最高 <span class="hl">+34.7%</span>（SWE-bench）</td></tr>
+<tr><td>SGLang 端到端吞吐</td><td>对自回归 1.57–5.62 倍，比最强投机基线高 4.7–24.2%（batch 1–64 全部第一）</td></tr>
+<tr><td>同条件对照</td><td>与 DFlash / DFlash2 / DSpark 用同一份 80K 数据、同一组超参训练，DFlux 仍每个基准全胜</td></tr>
+</table>
+</section>
+
+<section>
+<h2>5. 训练设施本身也是贡献</h2>
+<p>框架层面还有两件实事：</p>
+<ul>
+<li><strong>元数据感知调度</strong>：训练序列的长度、锚点布局、监督掩码都是已知的，可以前瞻分组、按估算成本（注意力/FFN/词表的开销模型）把样本均衡分到各 draft worker——等长样本的锚点数不同，实际计算量能差 1.79 倍，只按长度调度根本看不见；</li>
+<li><strong>异步监督流水线</strong>：CPU 批准备、监督 I/O 与 GPU 训练重叠，目标 worker 预填充下一批。</li>
+</ul>
+<p>合计：训练吞吐比 SpecForge 最高 +79%，离线监督准备最高 3.11 倍。</p>
+</section>
+
+<section>
+<h2>6. 我的看法</h2>
+<ul>
+<li><strong>方法论价值大于配方价值。</strong>「训练配置差异能盖过架构差异」这个观察对整个草稿模型子领域都成立——今后看到「方法 X 比 Y 好」的论文，第一反应应该是查它们的训练配置是否可比。LEGOSpec 把这件事工具化了，而且代码和权重都开源了。</li>
+<li><strong>DFlux 是目前开源里值得认真试的通用草稿。</strong>三个目标模型、10 个 workload 全胜 + 长上下文大幅领先，加上 R-Corrector 的 top-16 校正设计（99% 重叠覆盖）是个很聪明的工程折中——保留了全词表监督和理论无损，又把校正开销压到小候选集上。</li>
+<li><strong>和同日的 Draft Calibration 正好互补。</strong>那篇管「训好之后怎么调」（草稿温度降到 0.4–0.6 白拿 10%），这篇管「怎么训」（组件化 + 层级监督）。一个有意思的交叉问题：DFlux 训出来的草稿还「不自信」吗？如果层级监督顺带修正了分布形状，温度缩放的增益空间应该会缩小——这本身就是检验训练配方的探针。</li>
+<li><strong>长上下文是差异化卖点。</strong>SWA 混合骨干 + 紧凑缓存让 24 GiB 单卡能撑 133K 上下文的草稿，这在「长上下文 + 投机解码」这个越来越常见的场景里是实打实的能力。</li>
+</ul>
+</section>
+
+<footer>解读基于 arXiv:2611.33004v1（2026-11-24）。数据与结论均引自原文；「我的看法」为解读者观点。相关阅读：<a href="draft-calibration-2611.33111.html">Draft Calibration 解读</a>（同日挂出的草稿分布事后校准，与本篇「训练侧改进」互补）。</footer>
+
+</div>
+</body>
+</html>
